@@ -1,0 +1,146 @@
+// datasource와 generator는 Prisma가 자동으로 설정
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// --- 여기부터 모델 정의 시작 ---
+
+model User {
+  user_id            Int             @id @default(autoincrement())
+  username           String          @unique @db.VarChar(255)
+  email              String          @unique @db.VarChar(255)
+  password_hash      String
+  explorer_level     Int             @default(1)
+  experience_points  Int             @default(0)
+  created_at         DateTime        @default(now()) @db.Timestamptz(3)
+  is_public_profile  Boolean         @default(true)
+  
+  current_character_id Int?
+  currentCharacter     Character?      @relation("CurrentUserCharacter", fields: [current_character_id], references: [character_id])
+
+  quests        Quest[]
+  journeys      Journey[]
+  logbookEntries LogbookEntry[]
+  likes         Like[]
+  scraps        Scrap[]
+  characters    UserCharacter[]
+}
+
+model Character {
+  character_id   Int             @id @default(autoincrement())
+  character_name String          @db.VarChar(255)
+  description    String?         @db.Text
+  image_url      String?         @db.VarChar(255)
+  unlock_level   Int
+  is_premium     Boolean         @default(false)
+
+  unlockedByUsers UserCharacter[]
+  currentUsers    User[]          @relation("CurrentUserCharacter")
+}
+
+model UserCharacter {
+  user_character_id Int      @id @default(autoincrement())
+  user_id           Int
+  character_id      Int
+  unlocked_at       DateTime @default(now()) @db.Timestamptz(3)
+
+  user      User     @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+  character Character @relation(fields: [character_id], references: [character_id], onDelete: Cascade)
+
+  @@unique([user_id, character_id])
+}
+
+model Quest {
+  quest_id          Int      @id @default(autoincrement())
+  user_id           Int
+  quest_title       String
+  quest_description String?  @db.Text
+  required_level    Int
+  reward_exp        Int
+  is_main_quest     Boolean  @default(false)
+  is_completed      Boolean  @default(false)
+
+  user User @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+}
+
+model Location {
+  location_id      Int               @id @default(autoincrement())
+  location_name    String
+  address          String?
+  latitude         Decimal
+  longitude        Decimal
+  category         String?
+  is_solo_friendly Boolean           @default(true)
+  description      String?           @db.Text
+
+  journeys       JourneyLocation[]
+  logbookEntries LogbookEntry[]
+}
+
+model Journey {
+  journey_id    Int               @id @default(autoincrement())
+  user_id       Int
+  journey_title String
+  created_at    DateTime          @default(now()) @db.Timestamptz(3)
+
+  user      User              @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+  locations JourneyLocation[]
+  logbookEntries LogbookEntry[]
+}
+
+model JourneyLocation {
+  journey_location_id Int @id @default(autoincrement())
+  journey_id          Int
+  location_id         Int
+  sequence_number     Int
+
+  journey  Journey  @relation(fields: [journey_id], references: [journey_id], onDelete: Cascade)
+  location Location @relation(fields: [location_id], references: [location_id], onDelete: Cascade)
+}
+
+model LogbookEntry {
+  logbook_id    Int      @id @default(autoincrement())
+  user_id       Int
+  journey_id    Int?
+  location_id   Int?
+  entry_title   String
+  entry_content String?  @db.Text
+  is_public     Boolean  @default(true)
+  created_at    DateTime @default(now()) @db.Timestamptz(3)
+  image_urls    Json?    @db.JsonB
+
+  user     User     @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+  journey  Journey? @relation(fields: [journey_id], references: [journey_id], onDelete: SetNull)
+  location Location?@relation(fields: [location_id], references: [location_id], onDelete: SetNull)
+  likes    Like[]
+  scraps   Scrap[]
+}
+
+model Like {
+  like_id    Int      @id @default(autoincrement())
+  logbook_id Int
+  user_id    Int
+  created_at DateTime @default(now()) @db.Timestamptz(3)
+
+  logbookEntry LogbookEntry @relation(fields: [logbook_id], references: [logbook_id], onDelete: Cascade)
+  user         User         @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+
+  @@unique([logbook_id, user_id])
+}
+
+model Scrap {
+  scrap_id   Int      @id @default(autoincrement())
+  logbook_id Int
+  user_id    Int
+  created_at DateTime @default(now()) @db.Timestamptz(3)
+
+  logbookEntry LogbookEntry @relation(fields: [logbook_id], references: [logbook_id], onDelete: Cascade)
+  user         User         @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+
+  @@unique([logbook_id, user_id])
+}
