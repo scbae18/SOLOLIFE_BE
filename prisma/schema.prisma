@@ -69,18 +69,32 @@ model Quest {
 }
 
 model Location {
-  location_id      Int               @id @default(autoincrement())
-  location_name    String
-  address          String?
-  latitude         Decimal
-  longitude        Decimal
-  category         String?
-  is_solo_friendly Boolean           @default(true)
-  description      String?           @db.Text
+  location_id        Int       @id @default(autoincrement())
+  location_name      String
+  address            String?
+  latitude           Decimal?   @db.Decimal(9, 6)
+  longitude          Decimal?   @db.Decimal(9, 6)
+  category           String?
+  is_solo_friendly   Boolean   @default(true)
+  description        String?   @db.Text
 
-  journeys       JourneyLocation[]
-  logbookEntries LogbookEntry[]
+  rating_avg         Decimal?  @db.Decimal(3, 2)
+  rating_count       Int?
+  price_level        Int?
+  keywords           String[]
+  features           Json?
+  opening_hours      Json? 
+
+  dedupe_signature   String?   @unique
+  created_at         DateTime  @default(now())
+  updated_at         DateTime  @updatedAt
+
+  journeys           JourneyLocation[]
+  logbookEntries     LogbookEntry[]
+
+  @@index([latitude, longitude])
 }
+
 
 model Journey {
   journey_id    Int               @id @default(autoincrement())
