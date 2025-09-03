@@ -1,32 +1,40 @@
-// src/app.js
-import express from "express";
-import cors from "cors";
-import helmet from "helmet";
-import morgan from "morgan";
-import rateLimit from "express-rate-limit";
-import routes from "./routes/index.js";
-import { notFoundHandler, errorHandler } from "./middlewares/errorMiddleware.js";
-import { setupSwagger } from "./config/swagger.js";
+import express from 'express';
+import morgan from 'morgan';
+import cors from 'cors';
+import { ApiError } from './lib/ApiError.js';
+import { initSwagger } from './config/swagger.js';
+
+import authRoutes from './routes/auth.routes.js';
+import usersRoutes from './routes/users.routes.js';
+import charactersRoutes from './routes/characters.routes.js';
+import questsRoutes from './routes/quests.routes.js';
+import locationsRoutes from './routes/locations.routes.js';
+import journeysRoutes from './routes/journeys.routes.js';
+import logbooksRoutes from './routes/logbooks.routes.js';
 
 const app = express();
+app.use(cors());
+app.use(express.json({ limit: '5mb' }));
+app.use(morgan('dev'));
 
-app.use(helmet());
-app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "1mb" }));
-app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
-app.use(rateLimit({ windowMs: 60 * 1000, max: 100 }));
+// routes
+app.use('/auth', authRoutes);
+app.use('/users', usersRoutes);
+app.use('/characters', charactersRoutes);
+app.use('/quests', questsRoutes);
+app.use('/locations', locationsRoutes);
+app.use('/journeys', journeysRoutes);
+app.use('/logbooks', logbooksRoutes);
 
-// 🔗 Swagger
-setupSwagger(app);
+initSwagger(app);
 
-// Health
-app.get("/health", (_req, res) => res.json({ ok: true }));
+// 404
+app.use((req, res, next) => next(new ApiError(404, 'Not Found')));
 
-// API
-app.use("/api", routes);
-
-// 404 & Error
-app.use(notFoundHandler);
-app.use(errorHandler);
+// error handler
+app.use((err, _req, res, _next) => {
+  const status = err.status || 500;
+  res.status(status).json({ error: err.message || 'Server error', meta: err.meta || undefined });
+});
 
 export default app;
