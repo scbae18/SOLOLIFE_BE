@@ -91,6 +91,13 @@ model Location {
   features_flat  String[] @default([])  // 검색용 미러
   opening_hours      Json? 
 
+  google_place_id      String?  @unique
+  photo_reference      String?  // Google Places Photo reference (대표 1장)
+  photo_attribution    Json?    // [{author_name, author_url}] 등
+  fallback_photo_url   String?  // 네이버 등에서 확보한 백업용 대표 이미지 URL(선택)
+  thumbnail_url        String?  // 서버에서 썸네일 생성 시 저장(선택)
+
+
   dedupe_signature   String?   @unique
   created_at         DateTime  @default(now())
   updated_at         DateTime  @updatedAt
