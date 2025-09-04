@@ -3,14 +3,13 @@ import * as recService from '../services/recommendations.service.js';
 /** category + keyword 로 1개 추천 */
 export async function recommendOne(req, res, next) {
   try {
-    const { category, keyword } = req.body; // 입력은 이 두 개만
-    const result = await recService.recommendOne({ category, keyword });
+    const { category, keywords } = req.body; // 👈 keywords 배열 받음
+    const result = await recService.recommendOne({ category, keywords });
     res.json(result);
   } catch (err) {
     next(err);
   }
 }
-
 /** 현재 루트 뒤를 이을 N개 추천 */
 export async function recommendNext(req, res, next) {
   try {

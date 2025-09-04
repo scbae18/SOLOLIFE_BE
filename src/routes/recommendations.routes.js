@@ -8,21 +8,22 @@ const router = express.Router();
  * /recommendations/locations:
  *   post:
  *     tags: [Recommendations]
- *     summary: category + keyword 로 장소 1개 추천
+ *     summary: category + keywords 로 장소 1개 추천
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
- *             required: [category, keyword]
+ *             required: [category, keywords]
  *             properties:
  *               category:
  *                 type: string
  *                 example: "cafe"
- *               keyword:
- *                 type: string
- *                 example: "카공"
+ *               keywords:
+ *                 type: array
+ *                 items: { type: string }
+ *                 example: ["카공", "브런치"]
  *     responses:
  *       200:
  *         description: 추천된 장소
@@ -37,7 +38,7 @@ const router = express.Router();
  *                     $ref: '#/components/schemas/Location'
  *                 strategy:
  *                   type: string
- *                   example: "simple_category_keyword_v1"
+ *                   example: "simple_category_keywords_v1"
  */
 router.post('/locations', recCtrl.recommendOne);
 

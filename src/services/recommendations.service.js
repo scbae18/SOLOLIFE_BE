@@ -32,31 +32,44 @@ function weightedPick(items, weights) {
  * 동작: Location.category == category AND Location.keywords HAS keyword
  * 후보에서 평점/리뷰/최근성 가중 랜덤으로 1개 선택
  */
-export async function recommendOne({ category, keyword }) {
-  if (!category || !keyword) return { items: [], strategy: 'simple_category_keyword_v1' };
+export async function recommendOne({ category, keywords = [] }) {
+  if (!category || !keywords.length) {
+    return { items: [], strategy: 'simple_category_keywords_v1' };
+  }
 
   const candidates = await prisma.location.findMany({
     where: {
       AND: [
-        { category: category },
-        { keywords: { has: keyword } }
+        { category },
+        { keywords: { hasSome: keywords } }   // 👈 여러 키워드 중 하나라도 포함
       ]
     },
     select: {
-      location_id: true, location_name: true, category: true,
-      latitude: true, longitude: true, rating_avg: true, rating_count: true,
-      updated_at: true, created_at: true, price_level: true,
-      keywords: true, features: true
+      location_id: true,
+      location_name: true,
+      category: true,
+      latitude: true,
+      longitude: true,
+      rating_avg: true,
+      rating_count: true,
+      updated_at: true,
+      created_at: true,
+      price_level: true,
+      keywords: true,
+      features: true
     },
     take: 200
   });
 
-  if (!candidates.length) return { items: [], strategy: 'simple_category_keyword_v1' };
+  if (!candidates.length) {
+    return { items: [], strategy: 'simple_category_keywords_v1' };
+  }
 
   const weights = candidates.map(c => Math.max(0.1, scoreOf(c, null)));
   const picked = weightedPick(candidates, weights);
-  return { items: [picked], strategy: 'simple_category_keyword_v1' };
+  return { items: [picked], strategy: 'simple_category_keywords_v1' };
 }
+
 
 /** ================== 2) 루트 이어 추천(N개) ================== */
 /**
