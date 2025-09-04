@@ -8,33 +8,24 @@ const router = express.Router();
  * /recommendations/locations:
  *   post:
  *     tags: [Recommendations]
- *     summary: 조건에 맞는 장소 1개 추천
+ *     summary: category + keyword 로 장소 1개 추천
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
+ *             required: [category, keyword]
  *             properties:
- *               type: { type: string, description: "카테고리 (예: cafe, restaurant)" }
- *               features:
- *                 type: array
- *                 items: { type: string }
- *               keywords:
- *                 type: array
- *                 items: { type: string }
- *               center:
- *                 type: object
- *                 properties:
- *                   lat: { type: number }
- *                   lng: { type: number }
- *               delta: { type: number, example: 0.02 }
- *               price_level:
- *                 type: array
- *                 items: { type: integer }
+ *               category:
+ *                 type: string
+ *                 example: "cafe"
+ *               keyword:
+ *                 type: string
+ *                 example: "카공"
  *     responses:
  *       200:
- *         description: 추천 결과
+ *         description: 추천된 장소
  *         content:
  *           application/json:
  *             schema:
@@ -44,7 +35,9 @@ const router = express.Router();
  *                   type: array
  *                   items:
  *                     $ref: '#/components/schemas/Location'
- *                 strategy: { type: string }
+ *                 strategy:
+ *                   type: string
+ *                   example: "simple_category_keyword_v1"
  */
 router.post('/locations', recCtrl.recommendOne);
 
@@ -67,22 +60,20 @@ router.post('/locations', recCtrl.recommendOne);
  *               want_types:
  *                 type: array
  *                 items: { type: string }
- *               features:
- *                 type: array
- *                 items: { type: string }
- *               keywords:
- *                 type: array
- *                 items: { type: string }
- *               count: { type: integer, default: 2 }
+ *               count:
+ *                 type: integer
+ *                 default: 2
  *               center:
  *                 type: object
  *                 properties:
  *                   lat: { type: number }
  *                   lng: { type: number }
- *               delta: { type: number, example: 0.02 }
+ *               delta:
+ *                 type: number
+ *                 example: 0.02
  *     responses:
  *       200:
- *         description: 추천 결과
+ *         description: 다중 추천 결과
  *         content:
  *           application/json:
  *             schema:
@@ -99,7 +90,9 @@ router.post('/locations', recCtrl.recommendOne);
  *                 ordering_hint:
  *                   type: array
  *                   items: { type: string }
- *                 strategy: { type: string }
+ *                 strategy:
+ *                   type: string
+ *                   example: "route_next_v1"
  */
 router.post('/route/next', recCtrl.recommendNext);
 
@@ -122,15 +115,12 @@ router.post('/route/next', recCtrl.recommendNext);
  *               append:
  *                 type: array
  *                 items: { type: integer }
- *               start_id: { type: integer }
- *               center:
- *                 type: object
- *                 properties:
- *                   lat: { type: number }
- *                   lng: { type: number }
+ *               start_id:
+ *                 type: integer
+ *                 description: "출발 위치 ID"
  *     responses:
  *       200:
- *         description: 프리뷰 결과
+ *         description: 루트 미리보기
  *         content:
  *           application/json:
  *             schema:
