@@ -83,6 +83,7 @@ model Location {
   price_level        Int?
   keywords           String[]
   features           Json?
+  features_flat  String[] @default([])  // 검색용 미러
   opening_hours      Json? 
 
   dedupe_signature   String?   @unique

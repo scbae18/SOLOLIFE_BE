@@ -163,6 +163,7 @@ export function initSwagger(app) {
         { name: 'Locations' },
         { name: 'Journeys' },
         { name: 'Logbooks' },
+        { name: 'Recommendations' },
       ],
       security: [], // 개별 엔드포인트에서 security 지정
     },

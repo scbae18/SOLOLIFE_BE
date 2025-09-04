@@ -11,6 +11,7 @@ import questsRoutes from './routes/quests.routes.js';
 import locationsRoutes from './routes/locations.routes.js';
 import journeysRoutes from './routes/journeys.routes.js';
 import logbooksRoutes from './routes/logbooks.routes.js';
+import recommendationsRoutes from './routes/recommendations.routes.js';
 
 const app = express();
 app.use(cors());
@@ -25,6 +26,7 @@ app.use('/quests', questsRoutes);
 app.use('/locations', locationsRoutes);
 app.use('/journeys', journeysRoutes);
 app.use('/logbooks', logbooksRoutes);
+app.use('/recommendations', recommendationsRoutes);
 
 initSwagger(app);
 
