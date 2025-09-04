@@ -12,6 +12,7 @@ import locationsRoutes from './routes/locations.routes.js';
 import journeysRoutes from './routes/journeys.routes.js';
 import logbooksRoutes from './routes/logbooks.routes.js';
 import recommendationsRoutes from './routes/recommendations.routes.js';
+import onboardingRoutes from './routes/onboarding.routes.js';
 
 const app = express();
 app.use(cors());
@@ -27,6 +28,7 @@ app.use('/locations', locationsRoutes);
 app.use('/journeys', journeysRoutes);
 app.use('/logbooks', logbooksRoutes);
 app.use('/recommendations', recommendationsRoutes);
+app.use(onboardingRoutes);
 
 initSwagger(app);
 
