@@ -23,6 +23,8 @@ model User {
   current_character_id Int?
   currentCharacter     Character?      @relation("CurrentUserCharacter", fields: [current_character_id], references: [character_id])
 
+  onboarding_answers   Json?
+
   quests        Quest[]
   journeys      Journey[]
   logbookEntries LogbookEntry[]
