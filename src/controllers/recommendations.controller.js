@@ -1,16 +1,23 @@
 import * as recService from '../services/recommendations.service.js';
 
-/** category + keyword 로 1개 추천 */
+/** category + (optional) keywords/moods → 조건 매칭, 없으면 전역 랜덤 */
 export async function recommendOne(req, res, next) {
   try {
-    const { category, keywords } = req.body; // 👈 keywords 배열 받음
-    const result = await recService.recommendOne({ category, keywords });
+    const { category, keywords = [], moods = [] } = req.body;
+
+    // category는 있다고 가정. (없으면 방어)
+    if (!category) {
+      return res.status(400).json({ error: 'category는 필수입니다.' });
+    }
+
+    const result = await recService.recommendOne({ category, keywords, moods });
     res.json(result);
   } catch (err) {
     next(err);
   }
 }
-/** 현재 루트 뒤를 이을 N개 추천 */
+
+/** 현재 루트 뒤를 이을 N개 추천 (기존 유지) */
 export async function recommendNext(req, res, next) {
   try {
     const {
@@ -34,7 +41,7 @@ export async function recommendNext(req, res, next) {
   }
 }
 
-/** 루트 프리뷰(순서/거리/ETA) */
+/** 루트 프리뷰 (기존 유지) */
 export async function previewRoute(req, res, next) {
   try {
     const { selected = [], append = [], start_id } = req.body;
