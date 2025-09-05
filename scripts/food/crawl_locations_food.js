@@ -5,21 +5,20 @@ import crypto from "crypto";
 import { PrismaClient } from "@prisma/client";
 
 /**
- * 음식점 버전 (맛집 중심):
- * - 지역(영통구) 동/별칭/인접 키워드 × 음식점 동의어/세부카테고리 × 수식어 × 템플릿 조합
- * - 페이지네이션 확장(Naver Local) + 블로그/웹 스니펫으로 텍스트 보강
- * - Google TextSearch → { place_id, lat, lng }, Details → opening_hours
- * - 키워드 합집합, features 얕은 병합, 좌표/영업시간은 있을 때만 갱신
- * - 혼밥 시그널 발견 시 is_solo_friendly=true 휴리스틱
+ * 음식점 버전 (키워드 = "1인석"만, 오마카세 전면 제거)
+ * - 지역(영통구) × 카테고리 동의어 × 수식어 × 템플릿 조합
+ * - Naver Local 페이지네이션(start+=DISPLAY)
+ * - 블로그/웹문서 스니펫으로 텍스트 보강 → 분위기/키워드 추론
+ * - Google TextSearch → { place_id, lat, lng }
+ * - Google Details → opening_hours + types (+ price_level)
+ * - keywords: ["1인석"]만 저장
+ * - moods: 카페 버전과 동일한 허용 집합
  */
 
-// =================== 설정 ===================
 const prisma = new PrismaClient();
 
-// 기본 지역 라벨(로그용)
+// =================== 고정 정책 ===================
 const REGION_CANON = "경기도 수원시 영통구";
-
-// 지역 바리에이션(동/별칭/인접 표현)
 const REGION_ALIASES = [
   "경기도 수원시 영통구",
   "수원시 영통구",
@@ -28,41 +27,21 @@ const REGION_ALIASES = [
 ];
 const SUBAREAS = ["영통동", "망포동", "매탄동", "원천동"];
 
-// 카테고리(여러 개 가능) — 기본은 '음식점'
-const CATEGORY_KEYWORDS = ["음식점"]; 
+// 카테고리: 음식점
+const CATEGORY_KEYWORDS = ["음식점"];
 const CATEGORY_SYNONYMS = {
   음식점: [
-    "맛집",
-    "식당",
-    "레스토랑",
-    "밥집",
-    // 세부 카테고리(원하는 만큼 추가)
-    "한식", "중식", "일식", "양식", "분식", "고깃집",
-    "회", "초밥", "라멘", "우동", "덮밥",
-    "파스타", "스테이크", "버거", "치킨", "피자",
-    "곱창", "막창", "삼겹살", "전골", "국밥", "해장"
+    "음식점", "식당", "맛집",
+    "한식", "분식", "중식", "일식", "양식",
+    "라멘", "초밥", "스시", "파스타", "피자", "고깃집", "쉐프코스",
   ],
 };
 
-// 수식어(의도/분위기/편의/식사상황)
-const INTENT_MODIFIERS = [
-  "인기", "추천", "베스트", "핫플", "신상", "숨은 맛집", "로컬",
-];
-const MOOD_MODIFIERS = [
-  "가성비 좋은", "분위기 좋은", "깔끔한", "넓은", "웨이팅 긴", "웨이팅 없는",
-];
-const SOLO_MODIFIERS = [
-  "혼밥", "1인", "바좌석", "1인석", "혼자 가기 좋은",
-];
-const GROUP_MODIFIERS = [
-  "회식", "단체석", "모임", "가족모임", "룸", "프라이빗",
-];
-const DIET_MODIFIERS = [
-  "비건", "채식", "할랄", "글루텐프리", "저염",
-];
-const SERVICE_MODIFIERS = [
-  "예약", "배달", "포장", "주차", "야식", "24시간", "브레이크타임",
-];
+// 수식어
+const INTENT_MODIFIERS = ["인기", "추천", "베스트", "핫플", "신상", "숨은 명소", "로컬"];
+const MOOD_MODIFIERS = ["분위기 좋은", "감성", "아늑한", "조용한", "힙한", "채광 좋은", "뷰 좋은"];
+const DINING_MODIFIERS = ["예약", "웨이팅", "가성비", "가심비", "코스요리", "런치", "디너", "바 테이블", "카운터석", "1인석"];
+const FAMILY_POLICY = ["노키즈", "반려동물 동반", "데이트", "혼자 가기 좋은"];
 
 // 쿼리 템플릿
 const QUERY_TEMPLATES = [
@@ -80,26 +59,21 @@ const QUERY_TEMPLATES = [
 
 // 지역검색 파라미터
 const DISPLAY = 30; // 1~30
-const MAX_PAGES_PER_QUERY = 5; // 1,31,61,...
-
-// 전체 수집 상한(안전장치)
+const MAX_PAGES_PER_QUERY = 5;
 const MAX_QUERIES_PER_CATEGORY = 120;
 const MAX_ITEMS_PER_CATEGORY = 300;
-
-// 딜레이(ms)
 const BASE_DELAY_MS = 140;
 
-// opening_hours 컬럼이 없으면 true → features.openingHours에 임시 저장
+// opening_hours가 없으면 features.openingHours 폴백 사용 여부
 const USE_FEATURES_FALLBACK = false;
 
-// =================== 외부 API URL ===================
+// =================== API URL/ENV ===================
 const NAVER_LOCAL_URL       = "https://openapi.naver.com/v1/search/local.json";
 const NAVER_BLOG_URL        = "https://openapi.naver.com/v1/search/blog.json";
 const NAVER_WEB_URL         = "https://openapi.naver.com/v1/search/webkr.json";
 const GOOGLE_PLACES_TEXT    = "https://maps.googleapis.com/maps/api/place/textsearch/json";
 const GOOGLE_PLACES_DETAILS = "https://maps.googleapis.com/maps/api/place/details/json";
 
-// =================== 환경변수 체크 ===================
 const {
   NAVER_OPENAPI_CLIENT_ID,
   NAVER_OPENAPI_CLIENT_SECRET,
@@ -110,10 +84,9 @@ if (!NAVER_OPENAPI_CLIENT_ID || !NAVER_OPENAPI_CLIENT_SECRET) {
   throw new Error("NAVER_OPENAPI_CLIENT_ID / NAVER_OPENAPI_CLIENT_SECRET 누락");
 }
 if (!GOOGLE_MAPS_API_KEY) {
-  console.warn("[env] GOOGLE_MAPS_API_KEY 누락 (좌표/영업시간 채우려면 필요)");
+  console.warn("[env] GOOGLE_MAPS_API_KEY 누락 (좌표/영업시간/types 채우려면 필요)");
 }
 
-// =================== HTTP 헤더 ===================
 const localHeaders = {
   "X-Naver-Client-Id": NAVER_OPENAPI_CLIENT_ID,
   "X-Naver-Client-Secret": NAVER_OPENAPI_CLIENT_SECRET,
@@ -126,15 +99,10 @@ async function withRetry(fn, tries = 3, delay = 400) {
   let last;
   for (let i = 0; i < tries; i++) {
     try { return await fn(); }
-    catch (e) {
-      if (e.response) console.error("[HTTP ERROR]", e.response.status, e.response.data);
-      else console.error("[HTTP ERROR]", e.message);
-      last = e; await sleep(delay * (i + 1));
-    }
+    catch (e) { last = e; await sleep(delay * (i + 1)); }
   }
   throw last;
 }
-
 const stripHtml = (s = "") => s.replace(/<[^>]*>/g, " ").trim();
 function normalizeText(s = "") {
   return s
@@ -144,79 +112,80 @@ function normalizeText(s = "") {
     .trim()
     .toLowerCase();
 }
-
 const makeDedupeSig = ({ name, address }) =>
   crypto.createHash("sha256")
     .update(`${(name || "").toLowerCase()}|${(address || "").toLowerCase()}`)
     .digest("hex")
     .slice(0, 32);
 
-// =================== 룰(정규식 사전) + 스코어링 ===================
-// 음식점용 키워드(키워드 태깅용)
-const MOOD_LEX = {
-  solo:       [/혼밥/, /1인/, /바좌석/, /혼자\s?가기\s?좋/],
-  group:      [/단체석/, /단체\s?가능/, /회식/, /모임/, /가족모임/, /룸/, /프라이빗/],
-  clean:      [/깔끔/, /청결/, /위생/],
-  value:      [/가성비/, /가격\s?대비/, /합리적/, /저렴/, /싼편/],
-  spicy:      [/매콤/, /매운맛/, /맵찔이/, /불맛/],
-  queue:      [/웨이팅/, /대기줄/, /줄\s?길/, /대기\s?많/],
-  late:       [/야식/, /24\s?시간/, /새벽/],
+// =================== 허용 리스트 & 룰 ===================
+// Mood(분위기): 카페 버전과 동일
+const ALLOWED_MOOD_FEATURES = [
+  "사람많은", "한적한", "넓은", "아늑한", "조용한", "활기찬", "밝은", "어두운",
+];
+
+// Keyword: "1인석"만
+const ALLOWED_KEYWORDS = ["1인석"];
+
+// 분위기 매핑 룰
+const MOOD_RULES = {
+  사람많은: [/사람\s*많/, /붐비/, /북적/, /바글/, /혼잡/, /웨이팅/, /줄\s*길/],
+  한적한: [/한적/, /한산/, /널널/, /조용조용/, /사람\s*없/, /여유로/],
+  넓은: [/넓/, /좌석\s*많/, /자리\s*여유/, /공간\s*넉넉/, /층고\s*높/],
+  아늑한: [/아늑/, /포근/, /따뜻한\s*분위기/, /코지/, /감성\s*인테리어/],
+  조용한: [/조용/, /소음\s*낮/, /시끄럽지\s*않/, /차분/, /고요/, /잔잔/],
+  활기찬: [/활기/, /에너지/, /신나는/, /생기/, /북적/],
+  밝은: [/밝/, /채광\s*좋/, /햇살\s*좋/, /창가/, /환해/],
+  어두운: [/어둡/, /무드등/, /은은한\s*조명/, /저조도/],
 };
 
-const FEATURE_LEX = {
-  delivery:  [/배달/, /딜리버리/, /요기요/, /배민/, /쿠팡이츠/],
-  takeout:   [/포장/, /테이크아웃/],
-  parking:   [/주차/, /발렛/, /주차장/, /주차\s?가능/],
-  reserve:   [/예약/, /reser?vation/i, /네이버\s?예약/],
-  kids:      [/아이\s?동반/, /유아\s?의자/, /키즈/, /아기\s?의자/],
-  room:      [/룸/, /프라이빗/, /개별\s?룸/, /별실/],
-  alcohol:   [/술집/, /주류/, /맥주/, /사케/, /와인/, /소주/],
-  vegan:     [/비건/, /채식/, /plant-?based/i],
-  halal:     [/할랄/],
-  glutenfree:[/글루텐\s?프리/],
-};
+// ===== 1인석(엄격) 키워드 판별기 =====
+const ONESEAT_STRONG = [
+  /1\s*인\s*석/, /일인석/, /카운터\s*석/, /바\s*(테이블|석)/,
+];
+const ONESEAT_WEAK = [
+  /혼밥/, /혼자\s*(먹|가|가기\s*좋)/, /(자리|좌석)\s*여유/,
+];
+const ONESEAT_NEG = [
+  /1\s*인\s*(분|세트|메뉴)/, // 좌석이 아니라 메뉴/세트는 제외
+];
 
-// 키워드 태깅
-function countHits(regexList, t) { let c = 0; for (const r of regexList) if (r.test(t)) c++; return c; }
-function inferKeywords(text) {
-  const t = normalizeText(text);
-  const scores = {
-    혼밥:       countHits(MOOD_LEX.solo, t),
-    단체모임:   countHits(MOOD_LEX.group, t),
-    깔끔함:     countHits(MOOD_LEX.clean, t),
-    가성비:     countHits(MOOD_LEX.value, t),
-    매운맛:     countHits(MOOD_LEX.spicy, t),
-    웨이팅많음: countHits(MOOD_LEX.queue, t),
-    야식가능:   countHits(MOOD_LEX.late, t),
-  };
-  return Object.entries(scores)
-    .filter(([, v]) => v >= 1)
-    .sort((a, b) => b[1] - a[1])
-    .map(([k]) => k);
+function matchAny(rules, text) {
+  for (const r of rules) if (r.test(text)) return true;
+  return false;
 }
 
-// 기능/편의 태깅
-function inferFeatures(text) {
-  const t = normalizeText(text);
-  const feats = {
-    delivery:   countHits(FEATURE_LEX.delivery, t)   >= 1 || undefined,
-    takeout:    countHits(FEATURE_LEX.takeout, t)    >= 1 || undefined,
-    parking:    countHits(FEATURE_LEX.parking, t)    >= 1 || undefined,
-    reserve:    countHits(FEATURE_LEX.reserve, t)    >= 1 || undefined,
-    kids:       countHits(FEATURE_LEX.kids, t)       >= 1 || undefined,
-    room:       countHits(FEATURE_LEX.room, t)       >= 1 || undefined,
-    alcohol:    countHits(FEATURE_LEX.alcohol, t)    >= 1 || undefined,
-    vegan:      countHits(FEATURE_LEX.vegan, t)      >= 1 || undefined,
-    halal:      countHits(FEATURE_LEX.halal, t)      >= 1 || undefined,
-    glutenfree: countHits(FEATURE_LEX.glutenfree, t) >= 1 || undefined,
-  };
-  if (countHits(MOOD_LEX.queue, t) >= 1) feats.queue = 1;
-  if (countHits(MOOD_LEX.late, t)  >= 1) feats.late  = 1;
-  return feats;
+function inferMoodTags(textRaw) {
+  const t = normalizeText(textRaw);
+  const found = [];
+  for (const tag of ALLOWED_MOOD_FEATURES) {
+    const rules = MOOD_RULES[tag] || [];
+    if (matchAny(rules, t)) found.push(tag);
+  }
+  if (found.includes("조용한") && found.includes("사람많은")) {
+    const crowdStrong = matchAny([/웨이팅/, /줄\s*길/, /북적/, /붐비/], t);
+    return crowdStrong ? found.filter((x) => x !== "조용한") : found.filter((x) => x !== "사람많은");
+  }
+  return Array.from(new Set(found));
 }
 
-// =================== 외부 API 호출 ===================
-// (1) 네이버 지역검색
+function isOneSeat(text) {
+  const t = normalizeText(text || "");
+  if (ONESEAT_NEG.some((r) => r.test(t))) return false;
+  let score = 0;
+  if (ONESEAT_STRONG.some((r) => r.test(t))) score += 2;
+  const weakHits = ONESEAT_WEAK.reduce((acc, r) => acc + (r.test(t) ? 1 : 0), 0);
+  if (weakHits >= 2) score += 1;
+  return score >= 2;
+}
+
+function inferKeywordTagsStrict({ textRaw }) {
+  const out = [];
+  if (isOneSeat(textRaw)) out.push("1인석");
+  return Array.from(new Set(out));
+}
+
+// =================== 외부 API ===================
 async function fetchLocal(query, start = 1) {
   const { data } = await withRetry(() =>
     axios.get(NAVER_LOCAL_URL, {
@@ -228,14 +197,12 @@ async function fetchLocal(query, start = 1) {
   return data.items || [];
 }
 
-// (2) 블로그 강력 수집 (음식점 문맥에 맞춘 쿼리)
 async function fetchBlogSnippetsStrong({ name, region, category }) {
   const variants = [
     `${name} ${region} 후기 리뷰 ${category||""}`,
-    `${name} ${region} 메뉴 가격 ${category||""}`,
-    `${name} ${region} 웨이팅 대기 ${category||""}`,
-    `${name} ${region} 혼밥 1인 ${category||""}`,
-    `${name} ${region} 예약 포장 배달 ${category||""}`,
+    `${name} ${region} 1인석 혼밥 카운터석 ${category||""}`,
+    `${name} ${region} 분위기 인테리어 ${category||""}`,
+    `${name} ${region} ${category||""}`,
   ];
   let merged = "";
   for (const q of variants) {
@@ -246,12 +213,11 @@ async function fetchBlogSnippetsStrong({ name, region, category }) {
       const items = data?.items || [];
       merged += " " + items.map(it => normalizeText(`${it.title} ${it.description}`)).join(" ");
       await sleep(80);
-    } catch { /* skip */ }
+    } catch { /* ignore */ }
   }
   return merged.trim();
 }
 
-// (3) 웹문서 보강
 async function fetchWebSnippets(query, display=20) {
   const { data } = await withRetry(() =>
     axios.get(NAVER_WEB_URL, { headers: localHeaders, params: { query, display: Math.min(display, 30) }, timeout: 8000 })
@@ -260,10 +226,9 @@ async function fetchWebSnippets(query, display=20) {
   return items.map(it => normalizeText(`${it.title} ${it.description}`)).join(" ");
 }
 
-// (4) Google TextSearch → { place_id, lat, lng }
 async function searchPlaceByText(name, address) {
   if (!GOOGLE_MAPS_API_KEY) return null;
-  const qPrimary  = address ? `${name} ${address}` : `${name} ${REGION_CANON}`;
+  const qPrimary = address ? `${name} ${address}` : `${name} ${REGION_CANON}`;
   const qFallback = `${name} ${REGION_CANON}`;
 
   const tryQuery = async (q) => {
@@ -283,17 +248,28 @@ async function searchPlaceByText(name, address) {
   return found;
 }
 
-// (5) Google Details → opening_hours
-async function fetchPlaceOpeningHours(placeId) {
+async function fetchPlaceDetails(placeId) {
   if (!placeId || !GOOGLE_MAPS_API_KEY) return null;
   const { data } = await withRetry(() =>
     axios.get(GOOGLE_PLACES_DETAILS, {
-      params: { place_id: placeId, key: GOOGLE_MAPS_API_KEY, fields: "opening_hours", language: "ko" },
+      params: {
+        place_id: placeId,
+        key: GOOGLE_MAPS_API_KEY,
+        fields: "opening_hours,types,price_level",
+        language: "ko",
+      },
       timeout: 8000,
     })
   );
-  const oh = data?.result?.opening_hours; if (!oh) return null;
-  return { open_now: oh.open_now ?? null, weekday_text: oh.weekday_text ?? null, periods: oh.periods ?? null };
+  const r = data?.result || {};
+  const oh = r.opening_hours || null;
+  return {
+    opening_hours: oh
+      ? { open_now: oh.open_now ?? null, weekday_text: oh.weekday_text ?? null, periods: oh.periods ?? null }
+      : null,
+    types: Array.isArray(r.types) ? r.types : [],
+    price_level: typeof r.price_level === "number" ? r.price_level : null,
+  };
 }
 
 // =================== 업서트 ===================
@@ -308,43 +284,13 @@ async function upsertLocation(item, catLabel) {
   // 텍스트 보강
   let extraText = await fetchBlogSnippetsStrong({ name, region: REGION_CANON, category: catLabel });
   if (!extraText || extraText.length < 50) {
-    const webFallback = await fetchWebSnippets(`${name} ${REGION_CANON} ${catLabel||""} 메뉴 가격 후기 웨이팅 예약 포장 배달`);
+    const webFallback = await fetchWebSnippets(
+      `${name} ${REGION_CANON} ${catLabel||""} 후기 리뷰 1인석 혼밥 카운터석 분위기 조용 웨이팅`
+    );
     extraText = `${extraText||""} ${webFallback||""}`.trim();
   }
 
   const baseTextRaw = `${name} ${desc} ${extraText||""} ${catLabel||""}`;
-  const baseText = normalizeText(baseTextRaw);
-
-  // 추론
-  let inferredKeywords = inferKeywords(baseText);
-  const inferredFeatures = inferFeatures(baseText);
-
-  // 혼밥/1인 신호가 강하면 키워드에 보강
-  const hasSoloSignal = inferredKeywords.includes("혼밥") || inferredFeatures.room === false; // room=false는 의미 없음, guard만
-  if (hasSoloSignal && !inferredKeywords.includes("혼밥")) inferredKeywords.push("혼밥");
-
-  // 키워드 합집합
-  const prevKeywords = Array.isArray(existing?.keywords) ? existing.keywords : [];
-  const mergedKeywords = Array.from(new Set([...prevKeywords, ...inferredKeywords]));
-
-  // features 얕은 병합 + 디버그 스니펫
-  const mergedFeaturesWithDebug = {
-    ...(existing?.features || {}),
-    ...inferredFeatures,
-    delivery:   (existing?.features?.delivery   || inferredFeatures.delivery)   || undefined,
-    takeout:    (existing?.features?.takeout    || inferredFeatures.takeout)    || undefined,
-    parking:    (existing?.features?.parking    || inferredFeatures.parking)    || undefined,
-    reserve:    (existing?.features?.reserve    || inferredFeatures.reserve)    || undefined,
-    kids:       (existing?.features?.kids       || inferredFeatures.kids)       || undefined,
-    room:       (existing?.features?.room       || inferredFeatures.room)       || undefined,
-    alcohol:    (existing?.features?.alcohol    || inferredFeatures.alcohol)    || undefined,
-    vegan:      (existing?.features?.vegan      || inferredFeatures.vegan)      || undefined,
-    halal:      (existing?.features?.halal      || inferredFeatures.halal)      || undefined,
-    glutenfree: (existing?.features?.glutenfree || inferredFeatures.glutenfree) || undefined,
-    queue:      (existing?.features?.queue      || inferredFeatures.queue)      || undefined,
-    late:       (existing?.features?.late       || inferredFeatures.late)       || undefined,
-    _debugSnippet: baseTextRaw.slice(0, 200),
-  };
 
   // Google 좌표 + place_id
   let coords = { place_id: null, lat: null, lng: null };
@@ -356,37 +302,54 @@ async function upsertLocation(item, catLabel) {
     console.warn("[google:text] error", e?.message || e);
   }
 
-  // 영업시간
+  // Place 세부정보(영업시간 + types)
   let opening_hours = null;
+  let place_types = [];
   try {
-    if (coords.place_id) opening_hours = await fetchPlaceOpeningHours(coords.place_id);
-    console.log(`[google:hours] ${name} → ${opening_hours ? "ok" : "none"}`);
+    if (coords.place_id) {
+      const details = await fetchPlaceDetails(coords.place_id);
+      opening_hours = details?.opening_hours || null;
+      place_types = details?.types || [];
+    }
+    console.log(`[google:details] ${name} → hours=${opening_hours ? "ok" : "none"}, types=${place_types.join(",") || "none"}`);
   } catch (e) {
     console.warn("[google:details] error", e?.message || e);
   }
 
-  // features 임시 폴백 옵션
+  // ====== 추론 ======
+  const moodTags = inferMoodTags(baseTextRaw);
+  const keywordTags = inferKeywordTagsStrict({ textRaw: baseTextRaw }); // 1인석만
+
+  // 기존 값과 병합(허용 집합으로 필터)
+  const prevKeywords = Array.isArray(existing?.keywords) ? existing.keywords : [];
+  const mergedKeywords = Array.from(
+    new Set([...prevKeywords, ...keywordTags].filter(k => ALLOWED_KEYWORDS.includes(k)))
+  );
+  const prevFeaturesFlat = Array.isArray(existing?.features_flat) ? existing.features_flat : [];
+  const mergedMoodFlat = Array.from(
+    new Set([...prevFeaturesFlat, ...moodTags].filter(f => ALLOWED_MOOD_FEATURES.includes(f)))
+  );
+
+  // features JSON
+  const featuresJson = {
+    moods: mergedMoodFlat,
+    _debugSnippet: baseTextRaw.slice(0, 200),
+  };
   const featuresFinal = USE_FEATURES_FALLBACK && opening_hours
-    ? { ...mergedFeaturesWithDebug, openingHours: opening_hours }
-    : mergedFeaturesWithDebug;
+    ? { ...featuresJson, openingHours: opening_hours }
+    : featuresJson;
 
-  // 혼밥 신호 기반 is_solo_friendly 휴리스틱
-  const soloHeuristic =
-    /혼밥|1인|바좌석|혼자\s?가기\s?좋/.test(baseText) ||
-    !!inferredFeatures.late; // 늦게까지 영업하는 곳은 혼밥도 용이한 경우가 많음(약한 신호)
-
-  // ⚠️ 좌표는 "신규 값이 있을 때만" 갱신 (없으면 기존 보존)
+  // 업데이트/생성 페이로드
   const updatePayload = {
     location_name: name,
     address,
     latitude:  (coords.lat ?? existing?.latitude ?? null),
     longitude: (coords.lng ?? existing?.longitude ?? null),
-    category: catLabel,
+    category: "음식점",
     description: desc || null,
-    keywords: { set: mergedKeywords },
+    keywords: { set: mergedKeywords }, // ["1인석"]만
     features: featuresFinal,
-    // 혼밥 신호 있으면 true로 갱신 (기존 true는 유지)
-    is_solo_friendly: existing?.is_solo_friendly || soloHeuristic || true, 
+    features_flat: { set: mergedMoodFlat },
     updated_at: new Date(),
   };
   const createPayload = {
@@ -394,11 +357,12 @@ async function upsertLocation(item, catLabel) {
     address,
     latitude:  coords.lat,
     longitude: coords.lng,
-    category: catLabel,
-    is_solo_friendly: soloHeuristic || true, // 기본적으로 true, 신호 있으면 더 확신
+    category: "음식점",
+    is_solo_friendly: true,
     description: desc || null,
     keywords: mergedKeywords,
     features: featuresFinal,
+    features_flat: mergedMoodFlat,
     dedupe_signature,
     created_at: new Date(),
     updated_at: new Date(),
@@ -418,6 +382,7 @@ async function upsertLocation(item, catLabel) {
   console.log(
     `[upsert] ${name} (${address || "no-addr"}) → id=${loc.location_id}` +
     ` | lat=${loc.latitude ?? "null"}, lng=${loc.longitude ?? "null"}` +
+    ` | moods=[${mergedMoodFlat.join(", ")}]` +
     ` | keywords=[${mergedKeywords.join(", ")}]` +
     (opening_hours ? " | hours✅" : " | hours✖")
   );
@@ -426,18 +391,9 @@ async function upsertLocation(item, catLabel) {
 
 // =================== 바리에이션 생성 ===================
 function uniquePush(arr, value) { if (value && !arr.includes(value)) arr.push(value); }
-
 function composeQueriesForCategory(cat) {
   const catSyns = CATEGORY_SYNONYMS[cat] || [cat];
-  const modifiers = [
-    ...INTENT_MODIFIERS,
-    ...MOOD_MODIFIERS,
-    ...SOLO_MODIFIERS,
-    ...GROUP_MODIFIERS,
-    ...DIET_MODIFIERS,
-    ...SERVICE_MODIFIERS,
-  ];
-
+  const modifiers = [...INTENT_MODIFIERS, ...MOOD_MODIFIERS, ...DINING_MODIFIERS, ...FAMILY_POLICY];
   const regionCombos = [];
   for (const r of REGION_ALIASES) uniquePush(regionCombos, r);
   for (const r of REGION_ALIASES) for (const s of SUBAREAS) uniquePush(regionCombos, `${r} ${s}`);
@@ -449,7 +405,7 @@ function composeQueriesForCategory(cat) {
       for (const tmpl of QUERY_TEMPLATES) {
         const q1 = tmpl
           .replace("{region}", region)
-          .replace("{subarea}", region) // subarea도 regionCombos로 일관 처리
+          .replace("{subarea}", region)
           .replace("{category}", category)
           .replace("{modifier}", "");
         queries.add(q1.trim());
@@ -479,7 +435,7 @@ async function runCategory(cat) {
 
   for (const q of queries) {
     for (let page = 0; page < MAX_PAGES_PER_QUERY; page++) {
-      const start = 1 + page * DISPLAY; // 1,31,61,...
+      const start = 1 + page * DISPLAY;
       const items = await fetchLocal(q, start);
       if (!items.length) break;
 
@@ -507,7 +463,7 @@ async function runCategory(cat) {
 (async () => {
   try {
     for (const cat of CATEGORY_KEYWORDS) {
-      await runCategory(cat);
+      await runCategory(cat); // "음식점" 하나지만 구조 유지
     }
   } catch (e) {
     console.error(e);
