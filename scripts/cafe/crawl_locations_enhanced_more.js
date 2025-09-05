@@ -1,37 +1,38 @@
-// crawl_locations_enhanced_variants_with_geo_exclude_existing.js
+// crawl_locations_variants_wide.overwrite.js
 import "dotenv/config";
 import axios from "axios";
 import crypto from "crypto";
 import { PrismaClient } from "@prisma/client";
 
 /**
- * 강화판(확장):
- * - 바리에이션 폭증(지역 별칭/동/역/랜드마크/영문표기 × 카테고리 동의어(한/영) × 수식어 × 템플릿)
- * - 구글 TextSearch → {place_id, lat, lng}, Details → opening_hours
- * - keywords는 합집합, features는 얕은 병합
- * - ✅ 기존 레코드 스킵 옵션 (중복/이미 풍부한 레코드 제외)
+ * 광역 바리에이션 크롤러(카페 중심) - 덮어쓰기 모드
+ * - 기존 레코드도 스킵 없이 모두 처리(upsert로 갱신)
+ * - 제한형 태그 모드(USE_RESTRICTED_TAGS=true): features_flat/keywords를 지정된 집합으로만 저장
  */
 
 const prisma = new PrismaClient();
 
-/* =================== 설정 =================== */
+/* =================== 전역 설정 =================== */
 const REGION_CANON = "경기도 수원시 영통구";
 
-// ✅ 기존 레코드 스킵 정책
-const EXCLUDE_EXISTING_ALL = true;             // 같은 dedupe_signature가 있으면 무조건 스킵
-const EXCLUDE_WHEN_HAS_ENRICHMENT = true;      // lat/lng 또는 opening_hours 이미 있으면 스킵
+// ✅ 스킵 끄기(덮어쓰기)
+const EXCLUDE_EXISTING_ALL = false;        // 기존 dedupe_signature 있어도 스킵 안 함
+const EXCLUDE_WHEN_HAS_ENRICHMENT = false; // lat/lng 또는 opening_hours 있어도 스킵 안 함
 
-// 수집 상한/페이징
+// ✅ 제한형 태그 모드(원한다 했던 구성)
+const USE_RESTRICTED_TAGS = true;
+
+// 페이징/수집 상한(광역)
 const DISPLAY = 30;
 const MAX_PAGES_PER_QUERY = 5;
-const MAX_QUERIES_PER_CATEGORY = 220;          // ⬆️ 바리에이션 늘려서 상향
-const MAX_ITEMS_PER_CATEGORY = 500;            // ⬆️ 상향 (원하면 줄여도 OK)
+const MAX_QUERIES_PER_CATEGORY = 400;
+const MAX_ITEMS_PER_CATEGORY = 650;
 const BASE_DELAY_MS = 140;
 
 // opening_hours 컬럼 없을 때 features에 임시 저장할지
 const USE_FEATURES_FALLBACK = false;
 
-/* =================== 외부 URL/키 =================== */
+/* =================== 외부 URL/ENV =================== */
 const NAVER_LOCAL_URL       = "https://openapi.naver.com/v1/search/local.json";
 const NAVER_BLOG_URL        = "https://openapi.naver.com/v1/search/blog.json";
 const NAVER_WEB_URL         = "https://openapi.naver.com/v1/search/webkr.json";
@@ -57,38 +58,38 @@ const localHeaders = {
   Accept: "application/json",
 };
 
-/* =================== 바리에이션 원천 =================== */
-// 지역/동/역/랜드마크/영문표기
+/* =================== 바리에이션 원천(확장) =================== */
 const REGION_ALIASES = [
   "경기도 수원시 영통구", "수원시 영통구", "수원 영통구", "영통구",
   "경기 수원 영통구", "경기 영통구",
-  "Suwon Yeongtong-gu", "Yeongtong-gu", "Yeongtong Suwon", "Yeongtong"
+  "Suwon Yeongtong-gu", "Yeongtong-gu", "Yeongtong Suwon", "Yeongtong",
 ];
-const SUBAREAS = ["영통동", "망포동", "매탄동", "원천동"];
-const STATIONS = ["영통역", "망포역", "매탄권선역", "광교중앙역", "청명역"];
-const LANDMARKS = ["아주대학교", "경희대 국제캠퍼스", "광교호수공원", "수원컨벤션센터"];
+const SUBAREAS = ["영통동","망포동","매탄동","원천동","이의동","광교"];
+const STATIONS = ["영통역","망포역","매탄권선역","광교중앙역","청명역","광교중앙(아주대)역"];
+const LANDMARKS = ["아주대학교","경희대 국제캠퍼스","광교호수공원","수원컨벤션센터","광교엘포트몰","롯데백화점 수원"];
+const NEIGHBOR_REGIONS = [
+  "수원시 팔달구","수원시 장안구","수원시 권선구","용인시 수지구","용인시 기흥구",
+  "Suwon Paldal-gu","Suwon Jangan-gu","Suwon Gwonseon-gu","Yongin Suji-gu","Yongin Giheung-gu",
+];
 
-// 카테고리
 const CATEGORY_KEYWORDS = ["카페"];
 const CATEGORY_SYNONYMS = {
   카페: [
-    // 한글
-    "카페", "커피", "브런치 카페", "디저트 카페", "스터디 카페", "로스터리", "테이크아웃 카페",
-    // 영어(영문 검색 대비)
-    "cafe", "coffee", "brunch cafe", "dessert cafe", "study cafe", "roastery"
-  ]
+    "카페","커피","브런치 카페","디저트 카페","스터디 카페","로스터리","테이크아웃 카페",
+    "cafe","coffee","brunch cafe","dessert cafe","study cafe","roastery",
+  ],
 };
 
-// 수식어들
-const MOD_INTENT = ["인기", "추천", "베스트", "핫플", "신상", "숨은 명소", "로컬"];
-const MOD_MOOD   = ["분위기 좋은", "감성", "아늑한", "조용한", "힙한", "채광 좋은", "뷰 좋은"];
-const MOD_STUDY  = ["카공", "스터디", "팀플", "노트북", "콘센트 많음", "와이파이", "좌석 여유"];
-const MOD_POLICY = ["노키즈", "반려동물 동반", "데이트", "혼자 가기 좋은"];
-const MOD_TIME   = ["야간", "늦게까지", "24시", "주말", "평일", "브런치"];
-const MOD_NEARBY = ["근처", "가까운", "주변", "역세권"];
-const MOD_HASH   = ["#카공", "#감성카페", "#뷰맛집", "#노키즈", "#스터디카페", "#로스터리"];
+const MOD_INTENT = ["인기","추천","베스트","핫플","신상","숨은 명소","로컬"];
+const MOD_MOOD   = ["분위기 좋은","감성","아늑한","조용한","힙한","채광 좋은","뷰 좋은","한적한","사람 많음"];
+const MOD_STUDY  = ["카공","스터디","팀플","노트북","콘센트 많음","와이파이","좌석 여유"];
+const MOD_POLICY = ["노키즈","반려동물 동반","데이트","혼자 가기 좋은"];
+const MOD_TIME   = ["야간","늦게까지","24시","주말","평일","브런치","아침","심야"];
+const MOD_NEARBY = ["근처","가까운","주변","역세권","호수공원 근처"];
+const MOD_HASH   = ["#카공","#감성카페","#뷰맛집","#노키즈","#스터디카페","#로스터리","#인스타감성"];
 
-// 템플릿 (조합 다양화)
+const SUFFIXES = ["후기","리뷰","블로그","인스타","네이버","가성비","조용한","자리 여유","웨이팅"];
+
 const QUERY_TEMPLATES = [
   "{region} {category}",
   "{region} {modifier} {category}",
@@ -103,9 +104,10 @@ const QUERY_TEMPLATES = [
   "{station} {modifier} {category}",
   "{region} {nearby} {category}",
   "{sub} {nearby} {category}",
+  "{neighbor} {nearby} {category}",
   "{region} {category} {time}",
   "{sub} {category} {time}",
-  // 리뷰/블로그/인스타 느낌
+  "{neighbor} {category} {time}",
   "{region} {category} 후기",
   "{region} {category} 리뷰",
   "{region} {category} 블로그",
@@ -113,9 +115,6 @@ const QUERY_TEMPLATES = [
   "{sub} {category} 후기",
   "{station} {category} 후기",
 ];
-
-// 후기/키워드 꼬리표
-const SUFFIXES = ["후기", "리뷰", "블로그", "인스타", "네이버", "가성비", "조용한", "자리 여유"];
 
 /* =================== 유틸/룰 =================== */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -133,55 +132,44 @@ async function withRetry(fn, tries = 3, delay = 400) {
 }
 const stripHtml = (s = "") => s.replace(/<[^>]*>/g, " ").trim();
 function normalizeText(s = "") {
-  return s
-    .replace(/<[^>]*>/g, " ")
+  return s.replace(/<[^>]*>/g, " ")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
+    .replace(/\s+/g, " ").trim().toLowerCase();
 }
 const makeDedupeSig = ({ name, address }) =>
   crypto.createHash("sha256").update(`${(name||"").toLowerCase()}|${(address||"").toLowerCase()}`).digest("hex").slice(0,32);
 
-// 룰(요약)
-const MOOD_LEX = {
-  quiet: [/조용/, /한산/, /차분/, /소음\s?낮/, /시끄럽지\s?않/, /적막/, /잔잔/, /고요/, /소곤소곤/],
-  study: [/공부/, /스터디/, /과제/, /팀플/, /노트북/, /랩탑/, /카공/, /카공족/, /레포트/, /리포트/, /집중/, /집중하기\s?좋/],
-  cozy:  [/감성/, /아늑/, /따뜻/, /분위기\s?좋/, /인테리어/, /무드/, /포근/, /힙한/, /감성카페/, /감성\s?분위기/, /채광\s?좋/, /햇살\s?좋/],
-  outlets:[/콘센트\s?많/, /플러그/, /멀티탭/, /충전\s?가능/, /전원\s?가능/, /노트북\s?충전/, /충전기/, /콘센트\s?빵빵/],
-  spacious:[/넓/, /좌석\s?많/, /테이블\s?크/, /공간\s?넉넉/, /자리\s?여유/, /좌석\s?간격/, /층고\s?높/, /시야\s?트임/],
-  queue: [/웨이팅/, /대기줄/, /줄\s?길/, /대기\s?많/, /대기\s?시간/],
+// 제한형 태그 모드
+const ALLOWED_MOOD_FEATURES = ["사람많은","한적한","넓은","아늑한","조용한","활기찬","밝은","어두운"];
+const ALLOWED_KEYWORDS = ["사진찍기 좋은","콘센트 많은"];
+const MOOD_RULES = {
+  사람많은:[/사람\s*많/,/붐비/,/북적/,/바글/,/혼잡/,/웨이팅/,/줄\s*길/],
+  한적한:[/한적/,/한산/,/널널/,/조용조용/,/사람\s*없/,/여유로/],
+  넓은:[/넓/,/좌석\s*많/,/자리\s*여유/,/공간\s*넉넉/,/층고\s*높/],
+  아늑한:[/아늑/,/포근/,/따뜻한\s*분위기/,/코지/,/감성\s*인테리어/],
+  조용한:[/조용/,/소음\s*낮/,/시끄럽지\s*않/,/차분/,/고요/,/잔잔/],
+  활기찬:[/활기/,/에너지/,/신나는/,/북적/,/생기/],
+  밝은:[/밝/,/채광\s*좋/,/햇살\s*좋/,/창가/,/환해/],
+  어두운:[/어둡/,/무드등/,/은은한\s*조명/,/저조도/],
 };
-const FEATURE_LEX = {
-  wifi:     [/와이파이/, /\bwi-?fi\b/, /\bfree\s*wifi\b/, /\bfast\s*wifi\b/, /인터넷\s?빨라/, /속도\s?빠르/],
-  power:    [/콘센트/, /플러그/, /전원\s?가능/, /충전\s?가능/, /멀티탭/],
-  pet:      [/반려견/, /애견/, /반려동물/, /펫\s?동반/, /댕댕이/, /고양이\s?동반/],
-  parking:  [/주차/, /발렛/, /주차장/, /주차\s?가능/, /주차\s?편/],
-  restroom: [/화장실/, /\brestroom\b/, /\btoilet\b/, /세면대/],
-  kidfree:  [/노키즈/, /no\s*kids/, /12세\s?이하\s?출입\s?금지/],
-  rooftop:  [/루프탑/, /옥상/, /테라스/],
-  view:     [/뷰맛집/, /전망\s?좋/, /야경/, /리버뷰/, /시티뷰/],
+const KEYWORD_RULES = {
+  "사진찍기 좋은":[/사진\s*찍기\s*좋/,/포토\s*존/,/인스타\s*감성/,/감성\s*샷/,/사진\s*맛집/,/포토\s*스팟/],
+  "콘센트 많은":[/콘센트\s*많/,/플러그/,/멀티탭/,/충전\s*가능/,/전원\s*가능/],
 };
-function countHits(rs, t){let c=0; for(const r of rs) if(r.test(t)) c++; return c;}
-function inferKeywords(text){
-  const t = normalizeText(text);
-  const scores={조용:countHits(MOOD_LEX.quiet,t),공부:countHits(MOOD_LEX.study,t),감성:countHits(MOOD_LEX.cozy,t),콘센트많음:countHits(MOOD_LEX.outlets,t),넓음:countHits(MOOD_LEX.spacious,t),웨이팅많음:countHits(MOOD_LEX.queue,t)};
-  return Object.entries(scores).filter(([,v])=>v>=1).sort((a,b)=>b[1]-a[1]).map(([k])=>k);
+function matchAny(rules, text){ for(const r of rules) if(r.test(text)) return true; return false; }
+function inferMoodRestricted(raw){
+  const t = normalizeText(raw); const out=[];
+  for(const tag of ALLOWED_MOOD_FEATURES){ const rs = MOOD_RULES[tag]||[]; if(matchAny(rs,t)) out.push(tag); }
+  if(out.includes("조용한") && out.includes("사람많은")){
+    const crowdStrong = matchAny([/웨이팅/,/줄\s*길/,/북적/,/붐비/], t);
+    return crowdStrong ? out.filter(x=>x!=="조용한") : out.filter(x=>x!=="사람많은");
+  }
+  return Array.from(new Set(out));
 }
-function inferFeatures(text){
-  const t = normalizeText(text);
-  const feats={
-    wifi:countHits(FEATURE_LEX.wifi,t)>=1||undefined,
-    power:countHits(FEATURE_LEX.power,t)>=1||undefined,
-    pet:countHits(FEATURE_LEX.pet,t)>=1||undefined,
-    parking:countHits(FEATURE_LEX.parking,t)>=1||undefined,
-    restroom:countHits(FEATURE_LEX.restroom,t)>=1||undefined,
-    kidfree:countHits(FEATURE_LEX.kidfree,t)>=1||undefined,
-    rooftop:countHits(FEATURE_LEX.rooftop,t)>=1||undefined,
-    view:countHits(FEATURE_LEX.view,t)>=1||undefined,
-  };
-  if (countHits(MOOD_LEX.quiet,t)>=1) feats.noise=1;
-  return feats;
+function inferKeywordRestricted(raw){
+  const t = normalizeText(raw); const out=[];
+  for(const tag of ALLOWED_KEYWORDS){ const rs = KEYWORD_RULES[tag]||[]; if(matchAny(rs,t)) out.push(tag); }
+  return Array.from(new Set(out));
 }
 
 /* =================== 외부 호출 =================== */
@@ -228,13 +216,16 @@ async function fetchPlaceOpeningHours(placeId){
 
 /* =================== 기존 레코드 스킵 로딩 =================== */
 async function loadExistingSignatures() {
-  if (!EXCLUDE_EXISTING_ALL && !EXCLUDE_WHEN_HAS_ENRICHMENT) return { all: new Set(), enriched: new Set() };
+  // 스킵을 끄면 빈 세트 반환(로딩 비용도 줄임)
+  if (!EXCLUDE_EXISTING_ALL && !EXCLUDE_WHEN_HAS_ENRICHMENT) {
+    return { all: new Set(), enriched: new Set() };
+  }
 
   const all = new Set();
   const enriched = new Set();
-
   const pageSize = 1000;
   let skip = 0;
+
   while (true) {
     const rows = await prisma.location.findMany({
       select: { dedupe_signature: true, latitude: true, longitude: true, opening_hours: true },
@@ -254,61 +245,65 @@ async function loadExistingSignatures() {
 }
 
 /* =================== 업서트 =================== */
-async function upsertLocation(item, catLabel, skipSets) {
+async function upsertLocation(item, catLabel) {
   const name = stripHtml(item.title);
   const address = item.roadAddress || item.address || null;
   const desc = stripHtml(item.description || "");
   const dedupe_signature = makeDedupeSig({ name, address });
-
-  // ✅ 스킵 정책 체크
-  if (EXCLUDE_EXISTING_ALL && skipSets.all.has(dedupe_signature)) {
-    console.log(`[skip-existing] ${name}`);
-    return null;
-  }
-  if (EXCLUDE_WHEN_HAS_ENRICHMENT && skipSets.enriched.has(dedupe_signature)) {
-    console.log(`[skip-enriched] ${name}`);
-    return null;
-  }
 
   const existing = await prisma.location.findUnique({ where: { dedupe_signature } });
 
   // 텍스트 보강
   let extraText = await fetchBlogSnippetsStrong({ name, region: REGION_CANON, category: catLabel });
   if (!extraText || extraText.length < 50) {
-    const webFallback = await fetchWebSnippets(`${name} ${REGION_CANON} ${catLabel||""} 후기 리뷰 카공 조용 콘센트 와이파이`);
+    const webFallback = await fetchWebSnippets(`${name} ${REGION_CANON} ${catLabel||""} 후기 리뷰 카공 조용 콘센트 와이파이 포토존 사진맛집`);
     extraText = `${extraText||""} ${webFallback||""}`.trim();
   }
+
   const baseTextRaw = `${name} ${desc} ${extraText||""} ${catLabel||""}`;
   const baseText = normalizeText(baseTextRaw);
 
-  // 추론
-  let inferredKeywords = inferKeywords(baseText);
-  const inferredFeatures = inferFeatures(baseText);
+  // 모드별 추론(제한형 권장)
+  let mergedKeywords, mergedMoodFlat, featuresJson;
 
-  // 카테고리 휴리스틱
-  if ((catLabel || "").includes("카페")) {
-    const hasStudySignal = inferredFeatures.wifi || inferredFeatures.power || inferredKeywords.includes("조용");
-    if (hasStudySignal && !inferredKeywords.includes("공부")) inferredKeywords.push("공부");
+  if (USE_RESTRICTED_TAGS) {
+    const moodTags    = inferMoodRestricted(baseTextRaw);
+    const keywordTags = inferKeywordRestricted(baseTextRaw);
+
+    const prevKeywords = Array.isArray(existing?.keywords) ? existing.keywords : [];
+    mergedKeywords = Array.from(new Set([...prevKeywords, ...keywordTags].filter(k => ALLOWED_KEYWORDS.includes(k))));
+
+    const prevFeaturesFlat = Array.isArray(existing?.features_flat) ? existing.features_flat : [];
+    mergedMoodFlat = Array.from(new Set([...prevFeaturesFlat, ...moodTags].filter(f => ALLOWED_MOOD_FEATURES.includes(f))));
+
+    featuresJson = { moods: mergedMoodFlat, _debugSnippet: baseTextRaw.slice(0,200) };
+  } else {
+    let inferredKeywords = inferKeywordsWide(baseText);
+    const inferredFeatures = inferFeaturesWide(baseText);
+
+    if ((catLabel || "").includes("카페")) {
+      const hasStudySignal = inferredFeatures.wifi || inferredFeatures.power || inferredKeywords.includes("조용");
+      if (hasStudySignal && !inferredKeywords.includes("공부")) inferredKeywords.push("공부");
+    }
+
+    const prevKeywords = Array.isArray(existing?.keywords) ? existing.keywords : [];
+    mergedKeywords = Array.from(new Set([...prevKeywords, ...inferredKeywords]));
+    mergedMoodFlat = Array.isArray(existing?.features_flat) ? existing.features_flat : [];
+
+    featuresJson = {
+      ...(existing?.features || {}),
+      ...inferredFeatures,
+      wifi:     (existing?.features?.wifi     || inferredFeatures.wifi)     || undefined,
+      power:    (existing?.features?.power    || inferredFeatures.power)    || undefined,
+      pet:      (existing?.features?.pet      || inferredFeatures.pet)      || undefined,
+      parking:  (existing?.features?.parking  || inferredFeatures.parking)  || undefined,
+      restroom: (existing?.features?.restroom || inferredFeatures.restroom) || undefined,
+      noise:    (existing?.features?.noise    || inferredFeatures.noise)    || undefined,
+      _debugSnippet: baseTextRaw.slice(0, 200),
+    };
   }
 
-  // 키워드 합집합
-  const prevKeywords = Array.isArray(existing?.keywords) ? existing.keywords : [];
-  const mergedKeywords = Array.from(new Set([...prevKeywords, ...inferredKeywords]));
-
-  // features 얕은 병합 + 디버그
-  const mergedFeatures = {
-    ...(existing?.features || {}),
-    ...inferredFeatures,
-    wifi:     (existing?.features?.wifi     || inferredFeatures.wifi)     || undefined,
-    power:    (existing?.features?.power    || inferredFeatures.power)    || undefined,
-    pet:      (existing?.features?.pet      || inferredFeatures.pet)      || undefined,
-    parking:  (existing?.features?.parking  || inferredFeatures.parking)  || undefined,
-    restroom: (existing?.features?.restroom || inferredFeatures.restroom) || undefined,
-    noise:    (existing?.features?.noise    || inferredFeatures.noise)    || undefined,
-    _debugSnippet: baseTextRaw.slice(0, 200),
-  };
-
-  // 구글 좌표/영업시간
+  // 좌표/영업시간(새 값이 있으면 덮어씀, 없으면 기존 유지)
   let coords = { place_id: null, lat: null, lng: null };
   try {
     const found = await searchPlaceByText(name, address);
@@ -323,20 +318,24 @@ async function upsertLocation(item, catLabel, skipSets) {
   } catch (e) { console.warn("[google:details] error", e?.message || e); }
 
   const featuresFinal = USE_FEATURES_FALLBACK && opening_hours
-    ? { ...mergedFeatures, openingHours: opening_hours }
-    : mergedFeatures;
+    ? { ...featuresJson, openingHours: opening_hours }
+    : featuresJson;
 
   const updatePayload = {
     location_name: name,
     address,
+    // 새 값이 있으면 새 값 사용, 없으면 기존 유지(안전 덮어쓰기)
     latitude:  (coords.lat ?? existing?.latitude ?? null),
     longitude: (coords.lng ?? existing?.longitude ?? null),
     category: catLabel,
     description: desc || null,
     keywords: { set: mergedKeywords },
     features: featuresFinal,
+    ...(USE_RESTRICTED_TAGS ? { features_flat: { set: mergedMoodFlat } } : {}),
+    ...(opening_hours !== null ? { opening_hours } : {}), // 새로 받으면 갱신
     updated_at: new Date(),
   };
+
   const createPayload = {
     location_name: name,
     address,
@@ -347,19 +346,28 @@ async function upsertLocation(item, catLabel, skipSets) {
     description: desc || null,
     keywords: mergedKeywords,
     features: featuresFinal,
+    ...(USE_RESTRICTED_TAGS ? { features_flat: mergedMoodFlat } : {}),
+    ...(opening_hours !== null ? { opening_hours } : {}),
     dedupe_signature,
     created_at: new Date(),
     updated_at: new Date(),
   };
-  if (!USE_FEATURES_FALLBACK) { updatePayload.opening_hours = opening_hours; createPayload.opening_hours = opening_hours; }
 
-  const loc = await prisma.location.upsert({ where: { dedupe_signature }, update: updatePayload, create: createPayload });
+  const loc = await prisma.location.upsert({
+    where: { dedupe_signature },
+    update: updatePayload,
+    create: createPayload,
+  });
 
-  console.log(`[upsert] ${name} → id=${loc.location_id} | lat=${loc.latitude??"null"}, lng=${loc.longitude??"null"} ${(opening_hours?"| hours✅":"| hours✖")}`);
+  console.log(
+    `[upsert] ${name} → id=${loc.location_id} | lat=${loc.latitude??"null"}, lng=${loc.longitude??"null"} ` +
+    (opening_hours?"| hours✅":"| hours✖") +
+    (USE_RESTRICTED_TAGS ? ` | moods=[${(loc.features_flat||[]).join(", ")}] | keywords=[${loc.keywords.join(", ")}]` : "")
+  );
   return loc;
 }
 
-/* =================== 쿼리 컴포지션 =================== */
+/* =================== 쿼리 컴포지션(광역) =================== */
 function uniqPush(arr, val){ if(val && !arr.includes(val)) arr.push(val); }
 function composeQueriesForCategory(cat){
   const catSyns = CATEGORY_SYNONYMS[cat] || [cat];
@@ -371,52 +379,54 @@ function composeQueriesForCategory(cat){
   for (const s of SUBAREAS) uniqPush(regions, s);
   for (const st of STATIONS) uniqPush(regions, st);
   for (const lm of LANDMARKS) uniqPush(regions, lm);
+  for (const n of NEIGHBOR_REGIONS) uniqPush(regions, n);
 
   const queries = new Set();
 
   for (const category of catSyns) {
     for (const region of regions) {
       for (const tmpl of QUERY_TEMPLATES) {
-        // base
         const base = tmpl
-          .replace("{region}", region)
-          .replace("{sub}", region)
-          .replace("{station}", region)
-          .replace("{landmark}", region)
-          .replace("{category}", category)
-          .replace("{nearby}", "")
-          .replace("{time}", "")
-          .replace("{modifier}", "")
-          .replace("{suffix}", "");
+          .replaceAll("{region}", region)
+          .replaceAll("{sub}", region)
+          .replaceAll("{station}", region)
+          .replaceAll("{landmark}", region)
+          .replaceAll("{neighbor}", region)
+          .replaceAll("{category}", category)
+          .replaceAll("{nearby}", "")
+          .replaceAll("{time}", "")
+          .replaceAll("{modifier}", "")
+          .replaceAll("{suffix}", "");
         queries.add(base.trim());
 
-        // with modifier/time/nearby/suffix
         for (const m of modifiers) {
+          const suf = SUFFIXES[queries.size % SUFFIXES.length] || "";
           const qMod = tmpl
-            .replace("{region}", region)
-            .replace("{sub}", region)
-            .replace("{station}", region)
-            .replace("{landmark}", region)
-            .replace("{category}", category)
-            .replace("{modifier}", m)
-            .replace("{nearby}", MOD_NEARBY.includes(m) ? m : m) // 자리 채움
-            .replace("{time}", MOD_TIME.includes(m) ? m : m)
-            .replace("{suffix}", SUFFIXES[queries.size % SUFFIXES.length] || "");
+            .replaceAll("{region}", region)
+            .replaceAll("{sub}", region)
+            .replaceAll("{station}", region)
+            .replaceAll("{landmark}", region)
+            .replaceAll("{neighbor}", region)
+            .replaceAll("{category}", category)
+            .replaceAll("{modifier}", m)
+            .replaceAll("{nearby}", m)
+            .replaceAll("{time}", m)
+            .replaceAll("{suffix}", suf);
           queries.add(qMod.trim());
         }
 
-        // suffix 조합만
         for (const suf of SUFFIXES) {
           const qSuf = tmpl
-            .replace("{region}", region)
-            .replace("{sub}", region)
-            .replace("{station}", region)
-            .replace("{landmark}", region)
-            .replace("{category}", category)
-            .replace("{modifier}", "")
-            .replace("{nearby}", "")
-            .replace("{time}", "")
-            .replace("{suffix}", suf);
+            .replaceAll("{region}", region)
+            .replaceAll("{sub}", region)
+            .replaceAll("{station}", region)
+            .replaceAll("{landmark}", region)
+            .replaceAll("{neighbor}", region)
+            .replaceAll("{category}", category)
+            .replaceAll("{modifier}", "")
+            .replaceAll("{nearby}", "")
+            .replaceAll("{time}", "")
+            .replaceAll("{suffix}", suf);
           queries.add(qSuf.trim());
         }
       }
@@ -428,7 +438,7 @@ function composeQueriesForCategory(cat){
 }
 
 /* =================== 실행 루프 =================== */
-async function runCategory(cat, skipSets){
+async function runCategory(cat){
   const queries = composeQueriesForCategory(cat);
   console.log(`\n=== RUN: ${REGION_CANON} × ${cat} | queries=${queries.length} (cap=${MAX_QUERIES_PER_CATEGORY}) ===`);
 
@@ -447,10 +457,10 @@ async function runCategory(cat, skipSets){
         const name = stripHtml(it.title);
         const address = it.roadAddress || it.address || "";
         const sig = makeDedupeSig({ name, address });
-        if (seenSig.has(sig)) continue;
+        if (seenSig.has(sig)) continue; // 런타임 내 중복 방지(동일 장소 다중 쿼리)
         seenSig.add(sig);
 
-        const loc = await upsertLocation(it, cat, skipSets);
+        const loc = await upsertLocation(it, cat);
         if (loc) upserts++;
         await sleep(BASE_DELAY_MS);
       }
@@ -459,15 +469,15 @@ async function runCategory(cat, skipSets){
     if (upserts >= MAX_ITEMS_PER_CATEGORY) break;
   }
 
-  console.log(`[DONE] ${REGION_CANON} × ${cat} → inserted/updated ≈ ${upserts} (unique, after exclude rules)`);
+  console.log(`[DONE] ${REGION_CANON} × ${cat} → inserted/updated ≈ ${upserts} (overwrite mode)`);
 }
 
 /* =================== main =================== */
 (async () => {
   try {
-    const skipSets = await loadExistingSignatures();
+    // 스킵 로딩 안 함(덮어쓰기 모드)
     for (const cat of CATEGORY_KEYWORDS) {
-      await runCategory(cat, skipSets);
+      await runCategory(cat);
     }
   } catch (e) {
     console.error(e);
