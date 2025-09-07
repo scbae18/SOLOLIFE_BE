@@ -1,6 +1,7 @@
+// src/services/recommendations.service.js
 import { prisma } from '../lib/prisma.js';
 
-/** ================== 유틸 (기존) ================== */
+/** ================== 유틸 ================== */
 function haversineKm(a, b) {
   const toRad = x => x * Math.PI / 180;
   const R = 6371;
@@ -25,7 +26,8 @@ function weightedPick(items, weights) {
   return items[items.length-1];
 }
 
-async function pickRandomByCategory(category) {
+// 카테고리에서 랜덤 N개
+async function pickRandomInCategoryN(category, n = 3) {
   const rows = await prisma.$queryRaw`
     SELECT
       "location_id", "location_name", "address", "latitude", "longitude",
@@ -36,39 +38,33 @@ async function pickRandomByCategory(category) {
     FROM "Location"
     WHERE "category" = ${category}
     ORDER BY random()
-    LIMIT 1
+    LIMIT ${n}
   `;
-  return rows?.[0] ? [rows[0]] : [];
+  return rows ?? [];
 }
 
-
-/** ================== 1) 단일 추천(분기 로직 추가) ================== */
+/** ================== 1) 장소 추천(3개 후보) ================== */
 /**
  * 입력: { category: string, keywords?: string[], moods?: string[] }
- * 동작:
- *  - keywords만 있으면: category AND keywords(hasEvery)
- *  - moods만 있으면:    category AND features_flat(hasEvery)
- *  - 둘 다 있으면:      category AND keywords(hasEvery) AND features_flat(hasEvery)
- *  - 둘 다 없으면:      전역 랜덤 1개
- *  - 위 필터에서 후보 0개면: 메시지와 함께 전역 랜덤 1개
+ * 필터: category AND (keywords hasEvery?) AND (moods hasEvery?)
+ * 추출: 점수 가중 비복원 3개
+ * fallback: 매칭 0개면 카테고리 랜덤 3개
  */
 export async function recommendOne({ category, keywords = [], moods = [] }) {
   const hasK = Array.isArray(keywords) && keywords.length > 0;
   const hasM = Array.isArray(moods) && moods.length > 0;
 
-  // 3) 둘 다 없음 → "해당 카테고리 내" 랜덤 1개
   if (!hasK && !hasM) {
-    const items = await pickRandomByCategory(category);
+    const items = await pickRandomInCategoryN(category, 3);
     return {
       items,
       message: items.length
-        ? '키워드/무드 입력이 없어 해당 카테고리 내에서 랜덤으로 추천합니다.'
+        ? '키워드/무드 입력이 없어 해당 카테고리 내에서 랜덤 3개를 추천합니다.'
         : '해당 카테고리에 장소가 없어 추천할 수 없습니다.',
-      strategy: 'fallback_random_in_category_v1'
+      strategy: 'fallback_random_in_category_v2'
     };
   }
 
-  // where 동적 구성 (카테고리 고정)
   const whereAnd = [{ category }];
   if (hasK) whereAnd.push({ keywords: { hasEvery: keywords } });
   if (hasM) whereAnd.push({ features_flat: { hasEvery: moods } });
@@ -93,31 +89,41 @@ export async function recommendOne({ category, keywords = [], moods = [] }) {
     take: 300
   });
 
-  // 매칭 0개 → "해당 카테고리 내" 랜덤 1개로 대체
   if (!candidates.length) {
-    const items = await pickRandomByCategory(category);
+    const items = await pickRandomInCategoryN(category, 3);
     return {
       items,
       message: items.length
-        ? '조건에 맞는 장소가 없어 해당 카테고리 내에서 랜덤으로 추천합니다.'
+        ? '조건에 맞는 장소가 없어 해당 카테고리 내에서 랜덤 3개를 추천합니다.'
         : '해당 카테고리에 장소가 없어 추천할 수 없습니다.',
-      strategy: 'no_match_fallback_random_in_category_v1'
+      strategy: 'no_match_fallback_random_in_category_v2'
     };
   }
 
-  // 가중 랜덤 1개 선택 (기존 동일)
-  const weights = candidates.map(c => Math.max(0.1, scoreOf(c)));
-  const picked = weightedPick(candidates, weights);
+  // 점수 가중 비복원 추출 3개
+  const bag = [...candidates];
+  const picks = [];
+  const toPick = Math.min(3, bag.length);
+  for (let i = 0; i < toPick; i++) {
+    const weights = bag.map(c => Math.max(0.1, scoreOf(c)));
+    const chosen = weightedPick(bag, weights);
+    picks.push(chosen);
+    const idx = bag.findIndex(x => x.location_id === chosen.location_id);
+    if (idx >= 0) bag.splice(idx, 1);
+  }
 
   return {
-    items: [picked],
-    strategy: hasK && hasM
-      ? 'category_keywords_moods_and_v2'
-      : (hasK ? 'category_keywords_only_v2' : 'category_moods_only_v2')
+    items: picks,
+    strategy:
+      hasK && hasM
+        ? 'category_keywords_moods_and_v3'
+        : hasK
+          ? 'category_keywords_only_v3'
+          : 'category_moods_only_v3'
   };
 }
 
-/** ================== 2) 루트 이어 추천 / 3) 프리뷰 (변경 없음) ================== */
+/** ================== 2) 루트 이어 추천(범용) ================== */
 export async function recommendNext({
   currentRoute = [],
   wantTypes = [],
@@ -151,10 +157,11 @@ export async function recommendNext({
   });
 
   const filtered = candidates.filter(c => !exclude.has(Number(c.location_id)));
-  if (!filtered.length) return { items: [], ordering_hint: currentRoute.map(String), strategy: 'route_next_v1' };
+  if (!filtered.length) {
+    return { items: [], ordering_hint: currentRoute.map(String), strategy: 'route_next_v1' };
+  }
 
-  // 점수 + 거리 가중(기존)
-  const lastPoint = null; // (기존 로직 유지하려면 여기서 last/center 계산 포함)
+  const lastPoint = null;
   const centerForScore = lastPoint || center || null;
   const scoreWithDistance = (it) => {
     const base = scoreOf(it);
@@ -181,6 +188,7 @@ export async function recommendNext({
   return { items: picks, ordering_hint, strategy: 'route_next_v1' };
 }
 
+/** ================== 3) 루트 프리뷰 ================== */
 export async function previewRoute({ selected = [], append = [], startId }) {
   const ids = [...new Set([...selected, ...append])].map(Number);
   if (!ids.length) return { route: [], metrics: { total_distance_km: 0, eta_min: 0 } };
@@ -222,5 +230,140 @@ export async function previewRoute({ selected = [], append = [], startId }) {
   return {
     route: path.map((id, i) => ({ location_id: id, sequence_number: i + 1 })),
     metrics: { total_distance_km: Number(total.toFixed(2)), eta_min }
+  };
+}
+
+/** ================== 4) 무드 기반 2개(서로 다른 카테고리 보장 시도) ================== */
+export async function recommendTwoByMoodsDistinctCategory({
+  moods,
+  excludeLocationIds = [],
+  excludeCategories = [],
+  region
+}) {
+  const moodArray = Array.isArray(moods)
+    ? [...new Set(moods.map(String).map(s => s.trim()).filter(Boolean))]
+    : (moods ? [String(moods).trim()] : []);
+
+  if (moodArray.length === 0) {
+    return { items: [], meta: { reason: 'moods는 최소 1개 이상 필요합니다.' } };
+  }
+
+  const baseWhere = {
+    is_solo_friendly: true,
+    AND: [{ OR: [{ keywords: { hasSome: moodArray } }, { features_flat: { hasSome: moodArray } }] }],
+    NOT: [
+      ...(excludeLocationIds?.length ? [{ location_id: { in: excludeLocationIds } }] : []),
+      ...(excludeCategories?.length ? [{ category: { in: excludeCategories } }] : [])
+    ],
+    ...(region
+      ? { OR: [{ address: { contains: region } }, { location_name: { contains: region } }] }
+      : {})
+  };
+
+  const pool = await prisma.location.findMany({
+    where: baseWhere,
+    select: {
+      location_id: true, location_name: true, address: true,
+      latitude: true, longitude: true, category: true,
+      is_solo_friendly: true, description: true,
+      rating_avg: true, rating_count: true, price_level: true,
+      keywords: true, features: true, features_flat: true,
+      opening_hours: true, created_at: true, updated_at: true
+    },
+    take: 300,
+    orderBy: [{ rating_avg: 'desc' }, { rating_count: 'desc' }, { updated_at: 'desc' }]
+  });
+
+  if (!pool.length) {
+    return {
+      items: [],
+      meta: { reason: '조건에 맞는 장소가 없습니다.', moods: moodArray, excludeLocationIds, excludeCategories }
+    };
+  }
+
+  const weights1 = pool.map(c => Math.max(0.1, scoreOf(c)));
+  const first = weightedPick(pool, weights1);
+
+  const pool2 = pool.filter(it =>
+    it.location_id !== first.location_id &&
+    (it.category ?? '') !== (first.category ?? '')
+  );
+
+  let second = null;
+  if (pool2.length) {
+    const weights2 = pool2.map(c => Math.max(0.1, scoreOf(c)));
+    second = weightedPick(pool2, weights2);
+  } else {
+    const alt = await prisma.location.findFirst({
+      where: {
+        ...baseWhere,
+        NOT: [
+          ...(excludeLocationIds?.length ? [{ location_id: { in: excludeLocationIds } }] : []),
+          ...(excludeCategories?.length ? [{ category: { in: excludeCategories } }] : []),
+          { location_id: first.location_id },
+          { category: first.category ?? '' }
+        ]
+      },
+      orderBy: [{ rating_avg: 'desc' }, { rating_count: 'desc' }, { updated_at: 'desc' }]
+    });
+    second = alt ?? null;
+  }
+
+  const items = [first, second].filter(Boolean);
+  return {
+    items,
+    meta: {
+      moods: moodArray,
+      excludeLocationIds,
+      excludeCategories,
+      distinctCategory: items.length === 2 ? items[0].category !== items[1].category : false,
+      relaxedSecond: !!(second && !pool2.length)
+    }
+  };
+}
+
+/** ================== 5) 카테고리만으로 교체 후보 1개 ================== */
+export async function suggestReplacementByCategoryOne({
+  category,
+  excludeLocationIds = [],
+  region
+}) {
+  if (!category) {
+    return { items: [], meta: { reason: 'category is required' } };
+  }
+
+  const where = {
+    category,
+    is_solo_friendly: true,
+    ...(excludeLocationIds?.length ? { location_id: { notIn: excludeLocationIds } } : {}),
+    ...(region
+      ? { OR: [{ address: { contains: region } }, { location_name: { contains: region } }] }
+      : {})
+  };
+
+  const pool = await prisma.location.findMany({
+    where,
+    select: {
+      location_id: true, location_name: true, address: true,
+      latitude: true, longitude: true, category: true,
+      is_solo_friendly: true, description: true,
+      rating_avg: true, rating_count: true, price_level: true,
+      keywords: true, features: true, features_flat: true,
+      opening_hours: true, created_at: true, updated_at: true
+    },
+    take: 60,
+    orderBy: [{ rating_avg: 'desc' }, { rating_count: 'desc' }, { updated_at: 'desc' }]
+  });
+
+  if (!pool.length) {
+    return { items: [], meta: { category, excludeLocationIds, region: region ?? null, reason: 'no candidates' } };
+  }
+
+  const weights = pool.map(c => Math.max(0.1, scoreOf(c)));
+  const picked = weightedPick(pool, weights);
+
+  return {
+    items: [picked],
+    meta: { category, excludeLocationIds, region: region ?? null }
   };
 }
