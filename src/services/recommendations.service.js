@@ -26,7 +26,36 @@ function weightedPick(items, weights) {
   return items[items.length-1];
 }
 
-// 카테고리에서 랜덤 N개
+/** ================== 공통: 사진 주입 ==================
+ * 각 location_id 별로 LocationPhoto 최대 3장의 remote_url을 position 오름차순으로 붙인다.
+ * 결과: items[i].photos = string[] (url만)
+ */
+async function attachPhotosToItems(items) {
+  if (!items?.length) return items ?? [];
+  const ids = [...new Set(items.map(x => Number(x.location_id)).filter(Boolean))];
+  if (!ids.length) return items;
+
+  const photos = await prisma.locationPhoto.findMany({
+    where: { location_id: { in: ids } },
+    select: { location_id: true, position: true, remote_url: true },
+    orderBy: [{ location_id: 'asc' }, { position: 'asc' }]
+  });
+
+  const grouped = new Map();
+  for (const p of photos) {
+    if (!p.remote_url) continue;
+    const arr = grouped.get(p.location_id) ?? [];
+    if (arr.length < 3) arr.push(p.remote_url);
+    grouped.set(p.location_id, arr);
+  }
+
+  return items.map(it => ({
+    ...it,
+    photos: grouped.get(Number(it.location_id)) ?? []
+  }));
+}
+
+// 카테고리에서 랜덤 N개 (fallback용)
 async function pickRandomInCategoryN(category, n = 3) {
   const rows = await prisma.$queryRaw`
     SELECT
@@ -40,7 +69,8 @@ async function pickRandomInCategoryN(category, n = 3) {
     ORDER BY random()
     LIMIT ${n}
   `;
-  return rows ?? [];
+  const items = rows ?? [];
+  return attachPhotosToItems(items);
 }
 
 /** ================== 1) 장소 추천(3개 후보) ================== */
@@ -84,7 +114,9 @@ export async function recommendOne({ category, keywords = [], moods = [] }) {
       price_level: true,
       keywords: true,
       features: true,
-      features_flat: true
+      features_flat: true,
+      address: true,
+      opening_hours: true
     },
     take: 300
   });
@@ -112,8 +144,9 @@ export async function recommendOne({ category, keywords = [], moods = [] }) {
     if (idx >= 0) bag.splice(idx, 1);
   }
 
+  const itemsWithPhotos = await attachPhotosToItems(picks);
   return {
-    items: picks,
+    items: itemsWithPhotos,
     strategy:
       hasK && hasM
         ? 'category_keywords_moods_and_v3'
@@ -151,7 +184,8 @@ export async function recommendNext({
     select: {
       location_id: true, location_name: true, category: true,
       latitude: true, longitude: true, rating_avg: true, rating_count: true,
-      updated_at: true, created_at: true, keywords: true, features: true
+      updated_at: true, created_at: true, keywords: true, features: true,
+      address: true
     },
     take: 300
   });
@@ -170,22 +204,31 @@ export async function recommendNext({
     return base - Math.min(dist, 10) * 0.3;
   };
 
+  // 선택
   const picks = [];
   const pool = [...filtered];
   for (let i=0; i<Math.min(count, pool.length); i++) {
     const weights = pool.map(p => Math.max(0.1, scoreWithDistance(p)));
     const chosen = weightedPick(pool, weights);
-    picks.push({
-      location_id: chosen.location_id,
-      type: chosen.category,
-      score: scoreWithDistance(chosen)
-    });
+    picks.push(chosen);
     const idx = pool.findIndex(p => p.location_id === chosen.location_id);
     if (idx >= 0) pool.splice(idx, 1);
   }
 
-  const ordering_hint = [...currentRoute.map(String), ...picks.map(p => String(p.location_id))];
-  return { items: picks, ordering_hint, strategy: 'route_next_v1' };
+  // 사진 주입
+  const picksWithPhotos = await attachPhotosToItems(picks);
+
+  // 응답 최소 필드 정제
+  const items = picksWithPhotos.map(chosen => ({
+    location_id: chosen.location_id,
+    type: chosen.category,
+    location_name: chosen.location_name,
+    score: scoreWithDistance(chosen),
+    photos: chosen.photos // string[] 최대 3장
+  }));
+
+  const ordering_hint = [...currentRoute.map(String), ...items.map(p => String(p.location_id))];
+  return { items, ordering_hint, strategy: 'route_next_v1' };
 }
 
 /** ================== 3) 루트 프리뷰 ================== */
@@ -294,7 +337,7 @@ export async function recommendTwoByMoodsDistinctCategory({
     const weights2 = pool2.map(c => Math.max(0.1, scoreOf(c)));
     second = weightedPick(pool2, weights2);
   } else {
-    const alt = await prisma.location.findFirst({
+    second = await prisma.location.findFirst({
       where: {
         ...baseWhere,
         NOT: [
@@ -304,19 +347,28 @@ export async function recommendTwoByMoodsDistinctCategory({
           { category: first.category ?? '' }
         ]
       },
+      select: {
+        location_id: true, location_name: true, address: true,
+        latitude: true, longitude: true, category: true,
+        is_solo_friendly: true, description: true,
+        rating_avg: true, rating_count: true, price_level: true,
+        keywords: true, features: true, features_flat: true,
+        opening_hours: true, created_at: true, updated_at: true
+      },
       orderBy: [{ rating_avg: 'desc' }, { rating_count: 'desc' }, { updated_at: 'desc' }]
     });
-    second = alt ?? null;
   }
 
   const items = [first, second].filter(Boolean);
+  const itemsWithPhotos = await attachPhotosToItems(items);
+
   return {
-    items,
+    items: itemsWithPhotos,
     meta: {
       moods: moodArray,
       excludeLocationIds,
       excludeCategories,
-      distinctCategory: items.length === 2 ? items[0].category !== items[1].category : false,
+      distinctCategory: itemsWithPhotos.length === 2 ? itemsWithPhotos[0].category !== itemsWithPhotos[1].category : false,
       relaxedSecond: !!(second && !pool2.length)
     }
   };
@@ -362,8 +414,10 @@ export async function suggestReplacementByCategoryOne({
   const weights = pool.map(c => Math.max(0.1, scoreOf(c)));
   const picked = weightedPick(pool, weights);
 
+  const [withPhotos] = await attachPhotosToItems([picked]);
+
   return {
-    items: [picked],
+    items: [withPhotos],
     meta: { category, excludeLocationIds, region: region ?? null }
   };
 }
