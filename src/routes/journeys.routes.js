@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authRequired } from '../lib/authMiddleware.js';
 import { listMine, create, detail, update, remove } from '../controllers/journeys.controller.js';
 
-const r = Router();
+const router = Router();
 
 /**
  * @swagger
@@ -22,14 +22,14 @@ const r = Router();
  *       200:
  *         description: OK
  */
-r.get('/', authRequired, listMine);
+router.get('/', authRequired, listMine);
 
 /**
  * @swagger
  * /journeys:
  *   post:
  *     tags: [Journeys]
- *     summary: 여정 생성 (locations 시퀀스 포함 가능)
+ *     summary: 여정 생성 (sequence 미지정 시 전달 순서대로 1..N)
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
@@ -37,22 +37,27 @@ r.get('/', authRequired, listMine);
  *         application/json:
  *           schema:
  *             type: object
- *             required: [journey_title]
+ *             required: [journey_title, locations]
  *             properties:
- *               journey_title: { type: string }
+ *               journey_title: { type: string, example: "영통 조용-감성 루트" }
  *               locations:
  *                 type: array
+ *                 minItems: 1
+ *                 example:
+ *                   - { "location_id": 345, "sequence_number": 1 }
+ *                   - { "location_id": 512 }  # 미지정 시 자동 2
+ *                   - { "location_id": 678 }  # 미지정 시 자동 3
  *                 items:
  *                   type: object
- *                   required: [location_id, sequence_number]
+ *                   required: [location_id]
  *                   properties:
  *                     location_id: { type: integer }
- *                     sequence_number: { type: integer }
+ *                     sequence_number: { type: integer, description: "미지정시 전달 순서대로 1..N" }
  *     responses:
  *       201: { description: Created }
  *       401: { description: Unauthorized }
  */
-r.post('/', authRequired, create);
+router.post('/', authRequired, create);
 
 /**
  * @swagger
@@ -71,7 +76,7 @@ r.post('/', authRequired, create);
  *       401: { description: Unauthorized }
  *       404: { description: Not Found }
  */
-r.get('/:journeyId', authRequired, detail);
+router.get('/:journeyId', authRequired, detail);
 
 /**
  * @swagger
@@ -105,7 +110,7 @@ r.get('/:journeyId', authRequired, detail);
  *       401: { description: Unauthorized }
  *       404: { description: Not Found }
  */
-r.patch('/:journeyId', authRequired, update);
+router.patch('/:journeyId', authRequired, update);
 
 /**
  * @swagger
@@ -124,6 +129,6 @@ r.patch('/:journeyId', authRequired, update);
  *       401: { description: Unauthorized }
  *       404: { description: Not Found }
  */
-r.delete('/:journeyId', authRequired, remove);
+router.delete('/:journeyId', authRequired, remove);
 
-export default r;
+export default router;

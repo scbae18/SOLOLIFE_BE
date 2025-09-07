@@ -1,4 +1,4 @@
-// routes/recommendations.routes.js
+// src/routes/recommendations.routes.js
 import express from 'express';
 import * as recCtrl from '../controllers/recommendations.controller.js';
 
@@ -9,8 +9,8 @@ const router = express.Router();
  * /recommendations/locations:
  *   post:
  *     tags: [Recommendations]
- *     summary: category(+keywords/moods 옵션)으로 장소 1개 추천
- *     description: category는 필수이며, keywords만 있을 경우 keywords 모두 포함, moods만 있을 경우 moods(features_flat) 모두 포함, 둘 다 없으면 전역 랜덤으로 추천합니다. 조건 매칭 결과가 0개면 랜덤으로 대체합니다.
+ *     summary: category(+keywords/moods)로 장소 3개 후보 추천
+ *     description: category는 필수. keywords만 있으면 keywords hasEvery, moods만 있으면 features_flat hasEvery. 후보가 없으면 카테고리 랜덤 3개로 대체.
  *     requestBody:
  *       required: true
  *       content:
@@ -19,20 +19,18 @@ const router = express.Router();
  *             type: object
  *             required: [category]
  *             properties:
- *               category:
- *                 type: string
- *                 example: "카페"
+ *               category: { type: string, example: "카페" }
  *               keywords:
  *                 type: array
  *                 items: { type: string }
- *                 example: ["콘센트 많은", "사진찍기 좋은"]
+ *                 example: ["콘센트 많은","사진찍기 좋은"]
  *               moods:
  *                 type: array
  *                 items: { type: string }
- *                 example: ["조용한", "아늑한"]
+ *                 example: ["조용한","아늑한"]
  *     responses:
  *       200:
- *         description: 추천된 장소 또는 랜덤 대체
+ *         description: 최대 3개의 추천 후보
  *         content:
  *           application/json:
  *             schema:
@@ -40,50 +38,78 @@ const router = express.Router();
  *               properties:
  *                 items:
  *                   type: array
+ *                   maxItems: 3
  *                   items:
  *                     $ref: '#/components/schemas/Location'
- *                 strategy:
- *                   type: string
- *                 message:
- *                   type: string
+ *                 strategy: { type: string }
+ *                 message: { type: string }
  */
 router.post('/locations', recCtrl.recommendOne);
 
 /**
  * @swagger
- * /recommendations/route/next:
+ * /recommendations/routes/next:
  *   post:
  *     tags: [Recommendations]
- *     summary: 현재 루트 뒤를 이을 장소 추천 (N개)
+ *     summary: moods 기반으로 2개 장소 추천 (2번째는 1번째와 다른 카테고리)
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
+ *             required: [moods]
  *             properties:
- *               current_route:
+ *               moods:
+ *                 type: array
+ *                 description: 1개 이상 무드
+ *                 items: { type: string }
+ *                 example: ["조용한","아늑한"]
+ *               exclude_location_ids:
  *                 type: array
  *                 items: { type: integer }
- *               want_types:
+ *                 example: [101, 102]
+ *               exclude_categories:
  *                 type: array
  *                 items: { type: string }
- *               count:
- *                 type: integer
- *                 default: 2
- *               center:
- *                 type: object
- *                 properties:
- *                   lat: { type: number }
- *                   lng: { type: number }
- *               delta:
- *                 type: number
- *                 example: 0.02
+ *                 example: ["카페"]
+ *               region:
+ *                 type: string
+ *                 example: "경기도 수원시 영통구"
  *     responses:
  *       200:
- *         description: 다중 추천 결과
+ *         description: 최대 2개의 추천 결과(가능하면 2개)
  */
-router.post('/route/next', recCtrl.recommendNext);
+router.post('/routes/next', recCtrl.recommendRoutesNext);
+
+/**
+ * @swagger
+ * /recommendations/locations/replace-one:
+ *   post:
+ *     tags: [Recommendations]
+ *     summary: 카테고리만으로 교체 후보 1개 추천
+ *     description: 입력 카테고리에서 교체 후보를 1개 추천. exclude로 이미 선택된 장소를 제외.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [category]
+ *             properties:
+ *               category: { type: string, example: "카페" }
+ *               exclude_location_ids:
+ *                 type: array
+ *                 items: { type: integer }
+ *                 example: [123, 456]
+ *               region:
+ *                 type: string
+ *                 example: "경기도 수원시 영통구"
+ *     responses:
+ *       200:
+ *         description: 교체 후보 1개
+ */
+router.post('/locations/replace-one', recCtrl.suggestReplacementByCategoryOne);
 
 /**
  * @swagger
