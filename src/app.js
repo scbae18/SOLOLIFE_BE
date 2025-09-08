@@ -13,6 +13,7 @@ import journeysRoutes from './routes/journeys.routes.js';
 import logbooksRoutes from './routes/logbooks.routes.js';
 import recommendationsRoutes from './routes/recommendations.routes.js';
 import onboardingRoutes from './routes/onboarding.routes.js';
+import geocodeRouter from './routes/naverGeo.route.js';
 
 const app = express();
 app.use(cors());
@@ -29,6 +30,7 @@ app.use('/journeys', journeysRoutes);
 app.use('/logbooks', logbooksRoutes);
 app.use('/recommendations', recommendationsRoutes);
 app.use(onboardingRoutes);
+app.use('/geo',geocodeRouter);
 
 initSwagger(app);
 
