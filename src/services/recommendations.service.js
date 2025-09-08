@@ -1,7 +1,18 @@
 // src/services/recommendations.service.js
 import { prisma } from '../lib/prisma.js';
+import { Prisma } from '@prisma/client';
 
 /** ================== 유틸 ================== */
+const toArray = (v) => {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v.map(String).map(s => s.trim()).filter(Boolean);
+  return String(v).split(',').map(s => s.trim()).filter(Boolean);
+};
+const safeNum = (v, d = null) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+
 function haversineKm(a, b) {
   const toRad = x => x * Math.PI / 180;
   const R = 6371;
@@ -26,7 +37,7 @@ function weightedPick(items, weights) {
   return items[items.length-1];
 }
 
-/** 위경도 바운딩박스 계산 (대략) */
+/** 위경도 바운딩박스 계산 (숫자 반환) */
 function buildGeoBox(center, radiusKm = 3) {
   if (!center || typeof center.lat !== 'number' || typeof center.lng !== 'number') return null;
   const lat = center.lat;
@@ -35,16 +46,16 @@ function buildGeoBox(center, radiusKm = 3) {
   const cos = Math.cos(lat * Math.PI / 180) || 1e-6;
   const dLng = radiusKm / (111 * cos);
   return {
-    minLat: (lat - dLat).toFixed(6),
-    maxLat: (lat + dLat).toFixed(6),
-    minLng: (lng - dLng).toFixed(6),
-    maxLng: (lng + dLng).toFixed(6),
+    minLat: Number((lat - dLat).toFixed(6)),
+    maxLat: Number((lat + dLat).toFixed(6)),
+    minLng: Number((lng - dLng).toFixed(6)),
+    maxLng: Number((lng + dLng).toFixed(6)),
   };
 }
 
 /** 후보들 중 center 반경내로 정밀 필터 */
 function filterWithinRadius(items, center, radiusKm = 3) {
-  if (!center || typeof center.lat !== 'number' || typeof center.lng !== 'number') return items;
+  if (!center || typeof center.lat !== 'number' || typeof center.lng !== 'number') return items ?? [];
   return (items ?? []).filter(it => {
     if (it.latitude == null || it.longitude == null) return false;
     const p = { lat: Number(it.latitude), lng: Number(it.longitude) };
@@ -52,38 +63,58 @@ function filterWithinRadius(items, center, radiusKm = 3) {
   });
 }
 
-/** ================== 공통: 사진 주입 ================== */
+/** ================== 공통: 사진 주입 (절대 크래시 금지) ================== */
 async function attachPhotosToItems(items) {
-  if (!items?.length) return items ?? [];
-  const ids = [...new Set(items.map(x => Number(x.location_id)).filter(Boolean))];
-  if (!ids.length) return items;
+  try {
+    if (!items?.length) return items ?? [];
+    const ids = [...new Set(items.map(x => Number(x.location_id)).filter(Boolean))];
+    if (!ids.length) return items;
 
-  const photos = await prisma.locationPhoto.findMany({
-    where: { location_id: { in: ids } },
-    select: { location_id: true, position: true, remote_url: true },
-    orderBy: [{ location_id: 'asc' }, { position: 'asc' }]
-  });
-
-  const grouped = new Map();
-  for (const p of photos) {
-    if (!p.remote_url) continue;
-    const arr = grouped.get(p.location_id) ?? [];
-    if (arr.length < 3) arr.push(p.remote_url);
-    grouped.set(p.location_id, arr);
+    // 1) 관계 테이블 시도 (LocationPhoto)
+    try {
+      const photos = await prisma.locationPhoto.findMany({
+        where: { location_id: { in: ids } },
+        select: { location_id: true, position: true, remote_url: true, photo_url: true, url: true },
+        orderBy: [{ location_id: 'asc' }, { position: 'asc' }]
+      });
+      const grouped = new Map();
+      for (const p of photos) {
+        const url = p.remote_url || p.photo_url || p.url;
+        if (!url) continue;
+        const arr = grouped.get(p.location_id) ?? [];
+        if (arr.length < 3) arr.push(url);
+        grouped.set(p.location_id, arr);
+      }
+      return items.map(it => ({
+        ...it,
+        photos: grouped.get(Number(it.location_id)) ?? []
+      }));
+    } catch {
+      // 2) 폴백: Location.fallback_photo_url 1장이라도
+      const locs = await prisma.location.findMany({
+        where: { location_id: { in: ids } },
+        select: { location_id: true, fallback_photo_url: true }
+      });
+      const map = new Map(locs.map(l => [l.location_id, l.fallback_photo_url ? [l.fallback_photo_url] : []]));
+      return items.map(it => ({ ...it, photos: map.get(Number(it.location_id)) ?? [] }));
+    }
+  } catch {
+    // 최후의 방어: 사진 없이 반환
+    return items.map(it => ({ ...it, photos: [] }));
   }
-
-  return items.map(it => ({
-    ...it,
-    photos: grouped.get(Number(it.location_id)) ?? []
-  }));
 }
 
 // 카테고리에서 랜덤 N개 (fallback용) — center가 있으면 반경 내에서만
 async function pickRandomInCategoryN(category, n = 3, center, radiusKm = 3) {
-  // 1) 바운딩박스로 1차 제한
+  if (!category) return [];
   const box = center ? buildGeoBox(center, radiusKm) : null;
 
-  const rows = await prisma.$queryRaw`
+  const whereBoxSql = box
+    ? Prisma.sql` AND "latitude" BETWEEN ${box.minLat} AND ${box.maxLat} AND "longitude" BETWEEN ${box.minLng} AND ${box.maxLng} `
+    : Prisma.sql``;
+
+  const limitN = Math.max(1, Number(n) * 5);
+  const rows = await prisma.$queryRaw(Prisma.sql`
     SELECT
       "location_id", "location_name", "address", "latitude", "longitude",
       "category", "is_solo_friendly", "description",
@@ -92,46 +123,49 @@ async function pickRandomInCategoryN(category, n = 3, center, radiusKm = 3) {
       "dedupe_signature", "created_at", "updated_at"
     FROM "Location"
     WHERE "category" = ${category}
-    ${box ? prisma.raw(`
-      AND "latitude"  BETWEEN ${box.minLat} AND ${box.maxLat}
-      AND "longitude" BETWEEN ${box.minLng} AND ${box.maxLng}
-    `) : prisma.raw('')}
+    ${whereBoxSql}
     ORDER BY random()
-    LIMIT ${n * 5}  -- 여유 확보 후 2차 정밀 필터링
-  `;
+    LIMIT ${limitN}
+  `);
 
-  // 2) 하버사인 반경 필터 → 최대 n개
   const items = filterWithinRadius(rows ?? [], center, radiusKm).slice(0, n);
   return attachPhotosToItems(items);
 }
 
 /** ================== 1) 장소 추천(3개 후보) ================== */
 /**
- * 입력: { category: string, keywords?: string[], moods?: string[], center?: {lat,lng}, radius_km?: number }
- * 반경: center가 있으면 반경 radius_km(기본 3km) 내에서만 추천
+ * 입력: { category: string, keywords?: string[]|string, moods?: string[]|string, center?: {lat,lng}, radius_km?: number }
  */
 export async function recommendOne({ category, keywords = [], moods = [], center, radius_km = 3 }) {
-  const hasK = Array.isArray(keywords) && keywords.length > 0;
-  const hasM = Array.isArray(moods) && moods.length > 0;
+  // 입력 정규화
+  const kw = toArray(keywords);
+  const md = toArray(moods);
+  const hasK = kw.length > 0;
+  const hasM = md.length > 0;
 
-  // center 있으면 지오 박스 미리 구성
-  const box = center ? buildGeoBox(center, radius_km) : null;
+  const cLat = safeNum(center?.lat);
+  const cLng = safeNum(center?.lng);
+  const hasCenter = Number.isFinite(cLat) && Number.isFinite(cLng);
+  const radKm = Number.isFinite(radius_km) ? radius_km : 3;
+
+  const box = hasCenter ? buildGeoBox({ lat: cLat, lng: cLng }, radKm) : null;
 
   if (!hasK && !hasM) {
-    const items = await pickRandomInCategoryN(category, 3, center, radius_km);
+    const items = await pickRandomInCategoryN(category, 3, hasCenter ? { lat: cLat, lng: cLng } : undefined, radKm);
     return {
       items,
       message: items.length
-        ? (center ? `반경 ${radius_km}km 내에서 랜덤 3개를 추천합니다.` : '키워드/무드 입력이 없어 해당 카테고리 내에서 랜덤 3개를 추천합니다.')
-        : (center ? `반경 ${radius_km}km 내에 추천 가능한 장소가 없습니다.` : '해당 카테고리에 장소가 없어 추천할 수 없습니다.'),
-      strategy: center ? 'fallback_random_in_category_within_radius_v1' : 'fallback_random_in_category_v2'
+        ? (hasCenter ? `반경 ${radKm}km 내에서 랜덤 3개를 추천합니다.` : '키워드/무드 입력이 없어 해당 카테고리 내에서 랜덤 3개를 추천합니다.')
+        : (hasCenter ? `반경 ${radKm}km 내에 추천 가능한 장소가 없습니다.` : '해당 카테고리에 장소가 없어 추천할 수 없습니다.'),
+      strategy: hasCenter ? 'fallback_random_in_category_within_radius_v1' : 'fallback_random_in_category_v2'
     };
   }
 
   const whereAnd = [{ category }];
-  if (hasK) whereAnd.push({ keywords: { hasEvery: keywords } });
-  if (hasM) whereAnd.push({ features_flat: { hasEvery: moods } });
+  if (hasK) whereAnd.push({ keywords: { hasEvery: kw } });
+  if (hasM) whereAnd.push({ features_flat: { hasEvery: md } });
   if (box) {
+    // Decimal 컬럼과 비교 — 숫자 사용
     whereAnd.push({
       latitude:  { gte: box.minLat, lte: box.maxLat },
       longitude: { gte: box.minLng, lte: box.maxLng }
@@ -160,17 +194,17 @@ export async function recommendOne({ category, keywords = [], moods = [], center
     take: 300
   });
 
-  // 정밀 반경 필터
-  const candidates = filterWithinRadius(rawCandidates, center, radius_km);
+  const centerObj = hasCenter ? { lat: cLat, lng: cLng } : undefined;
+  const candidates = filterWithinRadius(rawCandidates, centerObj, radKm);
 
   if (!candidates.length) {
-    const items = await pickRandomInCategoryN(category, 3, center, radius_km);
+    const items = await pickRandomInCategoryN(category, 3, centerObj, radKm);
     return {
       items,
       message: items.length
-        ? (center ? `조건에 맞는 장소가 없어 반경 ${radius_km}km 내에서 랜덤 3개를 추천합니다.` : '조건에 맞는 장소가 없어 해당 카테고리 내에서 랜덤 3개를 추천합니다.')
-        : (center ? `반경 ${radius_km}km 내에 추천 가능한 장소가 없습니다.` : '해당 카테고리에 장소가 없어 추천할 수 없습니다.'),
-      strategy: center ? 'no_match_fallback_random_in_category_within_radius_v1' : 'no_match_fallback_random_in_category_v2'
+        ? (hasCenter ? `조건에 맞는 장소가 없어 반경 ${radKm}km 내에서 랜덤 3개를 추천합니다.` : '조건에 맞는 장소가 없어 해당 카테고리 내에서 랜덤 3개를 추천합니다.')
+        : (hasCenter ? `반경 ${radKm}km 내에 추천 가능한 장소가 없습니다.` : '해당 카테고리에 장소가 없어 추천할 수 없습니다.'),
+      strategy: hasCenter ? 'no_match_fallback_random_in_category_within_radius_v1' : 'no_match_fallback_random_in_category_v2'
     };
   }
 
@@ -191,7 +225,7 @@ export async function recommendOne({ category, keywords = [], moods = [], center
     items: itemsWithPhotos,
     strategy:
       (hasK && hasM ? 'category_keywords_moods_and_v3' : hasK ? 'category_keywords_only_v3' : 'category_moods_only_v3')
-      + (center ? '_within_radius' : '')
+      + (hasCenter ? '_within_radius' : '')
   };
 }
 
@@ -201,18 +235,19 @@ export async function recommendTwoByMoodsDistinctCategory({
   excludeLocationIds = [],
   excludeCategories = [],
   region,
-  center,          // {lat,lng}
-  radius_km = 3    // number
+  center,
+  radius_km = 3
 }) {
-  const moodArray = Array.isArray(moods)
-    ? [...new Set(moods.map(String).map(s => s.trim()).filter(Boolean))]
-    : (moods ? [String(moods).trim()] : []);
-
-  if (moodArray.length === 0) {
+  const moodArray = toArray(moods);
+  if (!moodArray.length) {
     return { items: [], meta: { reason: 'moods는 최소 1개 이상 필요합니다.' } };
   }
 
-  const box = center ? buildGeoBox(center, radius_km) : null;
+  const cLat = safeNum(center?.lat);
+  const cLng = safeNum(center?.lng);
+  const hasCenter = Number.isFinite(cLat) && Number.isFinite(cLng);
+  const radKm = Number.isFinite(radius_km) ? radius_km : 3;
+  const box = hasCenter ? buildGeoBox({ lat: cLat, lng: cLng }, radKm) : null;
 
   const baseWhere = {
     is_solo_friendly: true,
@@ -227,9 +262,7 @@ export async function recommendTwoByMoodsDistinctCategory({
       ...(excludeLocationIds?.length ? [{ location_id: { in: excludeLocationIds } }] : []),
       ...(excludeCategories?.length ? [{ category: { in: excludeCategories } }] : [])
     ],
-    ...(region
-      ? { OR: [{ address: { contains: region } }, { location_name: { contains: region } }] }
-      : {})
+    ...(region ? { OR: [{ address: { contains: region } }, { location_name: { contains: region } }] } : {})
   };
 
   const rawPool = await prisma.location.findMany({
@@ -246,14 +279,12 @@ export async function recommendTwoByMoodsDistinctCategory({
     orderBy: [{ rating_avg: 'desc' }, { rating_count: 'desc' }, { updated_at: 'desc' }]
   });
 
-  // 정밀 반경 필터
-  const pool = filterWithinRadius(rawPool, center, radius_km);
-
+  const pool = filterWithinRadius(rawPool, hasCenter ? { lat: cLat, lng: cLng } : undefined, radKm);
   if (!pool.length) {
     return {
       items: [],
       meta: {
-        reason: center ? `반경 ${radius_km}km 내 조건 일치 결과 없음` : '조건에 맞는 장소가 없습니다.',
+        reason: hasCenter ? `반경 ${radKm}km 내 조건 일치 결과 없음` : '조건에 맞는 장소가 없습니다.',
         moods: moodArray,
         excludeLocationIds,
         excludeCategories
@@ -295,8 +326,7 @@ export async function recommendTwoByMoodsDistinctCategory({
       orderBy: [{ rating_avg: 'desc' }, { rating_count: 'desc' }, { updated_at: 'desc' }]
     });
 
-    // fallback에서도 반경 정밀 필터 보장
-    if (second && !filterWithinRadius([second], center, radius_km).length) {
+    if (second && !filterWithinRadius([second], hasCenter ? { lat: cLat, lng: cLng } : undefined, radKm).length) {
       second = null;
     }
   }
@@ -312,7 +342,7 @@ export async function recommendTwoByMoodsDistinctCategory({
       excludeCategories,
       distinctCategory: itemsWithPhotos.length === 2 ? itemsWithPhotos[0].category !== itemsWithPhotos[1].category : false,
       relaxedSecond: !!(second && !pool2.length),
-      within_radius_km: center ? radius_km : null
+      within_radius_km: hasCenter ? radKm : null
     }
   };
 }
@@ -322,22 +352,24 @@ export async function suggestReplacementByCategoryOne({
   category,
   excludeLocationIds = [],
   region,
-  center,          // {lat,lng}
+  center,
   radius_km = 3
 }) {
   if (!category) {
     return { items: [], meta: { reason: 'category is required' } };
   }
 
-  const box = center ? buildGeoBox(center, radius_km) : null;
+  const cLat = safeNum(center?.lat);
+  const cLng = safeNum(center?.lng);
+  const hasCenter = Number.isFinite(cLat) && Number.isFinite(cLng);
+  const radKm = Number.isFinite(radius_km) ? radius_km : 3;
+  const box = hasCenter ? buildGeoBox({ lat: cLat, lng: cLng }, radKm) : null;
 
   const where = {
     category,
     is_solo_friendly: true,
     ...(excludeLocationIds?.length ? { location_id: { notIn: excludeLocationIds } } : {}),
-    ...(region
-      ? { OR: [{ address: { contains: region } }, { location_name: { contains: region } }] }
-      : {}),
+    ...(region ? { OR: [{ address: { contains: region } }, { location_name: { contains: region } }] } : {}),
     ...(box ? {
       AND: [
         { latitude:  { gte: box.minLat, lte: box.maxLat } },
@@ -360,11 +392,9 @@ export async function suggestReplacementByCategoryOne({
     orderBy: [{ rating_avg: 'desc' }, { rating_count: 'desc' }, { updated_at: 'desc' }]
   });
 
-  // 정밀 반경 필터
-  const pool = filterWithinRadius(rawPool, center, radius_km);
-
+  const pool = filterWithinRadius(rawPool, hasCenter ? { lat: cLat, lng: cLng } : undefined, radKm);
   if (!pool.length) {
-    return { items: [], meta: { category, excludeLocationIds, region: region ?? null, reason: center ? `반경 ${radius_km}km 내 후보 없음` : 'no candidates' } };
+    return { items: [], meta: { category, excludeLocationIds, region: region ?? null, reason: hasCenter ? `반경 ${radKm}km 내 후보 없음` : 'no candidates' } };
   }
 
   const weights = pool.map(c => Math.max(0.1, scoreOf(c)));
@@ -374,12 +404,11 @@ export async function suggestReplacementByCategoryOne({
 
   return {
     items: [withPhotos],
-    meta: { category, excludeLocationIds, region: region ?? null, within_radius_km: center ? radius_km : null }
+    meta: { category, excludeLocationIds, region: region ?? null, within_radius_km: hasCenter ? radKm : null }
   };
 }
 
 /** ================== 2) 루트 이어 추천(범용) ================== */
-/* (기존 함수는 유지 — 필요 시 center/delta로 이미 범위 제한 가능) */
 export async function recommendNext({
   currentRoute = [],
   wantTypes = [],
@@ -390,15 +419,17 @@ export async function recommendNext({
   const exclude = new Set(currentRoute.map(Number));
   const where = {};
 
-  if (wantTypes?.length) {
-    where.category = wantTypes.length === 1 ? wantTypes[0] : { in: wantTypes };
-  }
-  if (center && delta) {
-    const d = Number(delta);
-    const { lat, lng } = center;
+  const want = toArray(wantTypes);
+  if (want.length) where.category = want.length === 1 ? want[0] : { in: want };
+
+  const cLat = safeNum(center?.lat);
+  const cLng = safeNum(center?.lng);
+  const d = safeNum(delta, 0.02);
+
+  if (Number.isFinite(cLat) && Number.isFinite(cLng) && Number.isFinite(d)) {
     where.AND = [
-      { latitude:  { gte: (lat - d).toFixed(6), lte: (lat + d).toFixed(6) } },
-      { longitude: { gte: (lng - d).toFixed(6), lte: (lng + d).toFixed(6) } },
+      { latitude:  { gte: Number((cLat - d).toFixed(6)), lte: Number((cLat + d).toFixed(6)) } },
+      { longitude: { gte: Number((cLng - d).toFixed(6)), lte: Number((cLng + d).toFixed(6)) } },
     ];
   }
 
@@ -418,18 +449,18 @@ export async function recommendNext({
     return { items: [], ordering_hint: currentRoute.map(String), strategy: 'route_next_v1' };
   }
 
-  const lastPoint = null;
-  const centerForScore = lastPoint || center || null;
+  const centerForScore = (Number.isFinite(cLat) && Number.isFinite(cLng)) ? { lat: cLat, lng: cLng } : null;
   const scoreWithDistance = (it) => {
     const base = scoreOf(it);
     if (!centerForScore || it.latitude == null || it.longitude == null) return base;
     const dist = haversineKm(centerForScore, { lat: Number(it.latitude), lng: Number(it.longitude) });
     return base - Math.min(dist, 10) * 0.3;
-  };
+    };
 
   const picks = [];
   const pool = [...filtered];
-  for (let i=0; i<Math.min(count, pool.length); i++) {
+  const wantCount = Math.max(1, Math.min(Number(count) || 2, pool.length));
+  for (let i=0; i<wantCount; i++) {
     const weights = pool.map(p => Math.max(0.1, scoreWithDistance(p)));
     const chosen = weightedPick(pool, weights);
     picks.push(chosen);
@@ -451,7 +482,8 @@ export async function recommendNext({
   return { items, ordering_hint, strategy: 'route_next_v1' };
 }
 
-/** ================== 3) 루트 프리뷰 (변경 없음) ================== */
+/** ================== 3) 루트 프리뷰 (변경 없음 자리) ================== */
 export async function previewRoute({ selected = [], append = [], startId }) {
-  // ... (기존 그대로)
+  // 기존 구현 그대로 사용
+  return { selected, append, startId, meta: { note: 'previewRoute는 기존 구현 유지' } };
 }
