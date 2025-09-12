@@ -150,13 +150,14 @@ export async function recommendOne({ category, keywords = [], moods = [], center
 
   const box = hasCenter ? buildGeoBox({ lat: cLat, lng: cLng }, radKm) : null;
 
+  // 키워드/무드가 없으면: 카테고리 유지 + 랜덤 추천
   if (!hasK && !hasM) {
     const items = await pickRandomInCategoryN(category, 3, hasCenter ? { lat: cLat, lng: cLng } : undefined, radKm);
     return {
       items,
       message: items.length
-        ? (hasCenter ? `반경 ${radKm}km 내에서 랜덤 3개를 추천합니다.` : '키워드/무드 입력이 없어 해당 카테고리 내에서 랜덤 3개를 추천합니다.')
-        : (hasCenter ? `반경 ${radKm}km 내에 추천 가능한 장소가 없습니다.` : '해당 카테고리에 장소가 없어 추천할 수 없습니다.'),
+        ? (hasCenter ? `반경 ${radKm}km 내에서 '${category}' 카테고리 랜덤 3개를 추천합니다.` : `'${category}' 카테고리에서 랜덤 3개를 추천합니다.`)
+        : (hasCenter ? `반경 ${radKm}km 내에 '${category}' 카테고리 추천 후보가 없습니다.` : `'${category}' 카테고리에 추천 가능한 장소가 없습니다.`),
       strategy: hasCenter ? 'fallback_random_in_category_within_radius_v1' : 'fallback_random_in_category_v2'
     };
   }
@@ -202,8 +203,8 @@ export async function recommendOne({ category, keywords = [], moods = [], center
     return {
       items,
       message: items.length
-        ? (hasCenter ? `조건에 맞는 장소가 없어 반경 ${radKm}km 내에서 랜덤 3개를 추천합니다.` : '조건에 맞는 장소가 없어 해당 카테고리 내에서 랜덤 3개를 추천합니다.')
-        : (hasCenter ? `반경 ${radKm}km 내에 추천 가능한 장소가 없습니다.` : '해당 카테고리에 장소가 없어 추천할 수 없습니다.'),
+        ? (hasCenter ? `조건에 맞는 장소가 없어 반경 ${radKm}km 내에서 '${category}' 카테고리 랜덤 3개를 추천합니다.` : `조건에 맞는 장소가 없어 '${category}' 카테고리에서 랜덤 3개를 추천합니다.`)
+        : (hasCenter ? `반경 ${radKm}km 내에 '${category}' 카테고리 추천 후보가 없습니다.` : `'${category}' 카테고리에 추천 가능한 장소가 없습니다.`),
       strategy: hasCenter ? 'no_match_fallback_random_in_category_within_radius_v1' : 'no_match_fallback_random_in_category_v2'
     };
   }
