@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma.js';
 import { ApiError } from '../lib/ApiError.js';
 import { getPagination, getOrder } from '../utils/pagination.js';
+import { createReviewsFromLogbook } from './reviews.service.js';
 
 export async function listPublic(q) {
   const { page, limit, skip } = getPagination(q);
@@ -24,10 +25,21 @@ export async function listPublic(q) {
   return { page, limit, total, items };
 }
 
-export function createEntry(user_id, data) {
-  return prisma.logbookEntry.create({
-    data: { ...data, user_id }
+export async function createEntry(user_id, data) {
+  // places 정보를 분리하고 나머지 데이터로 여정기록을 생성
+  const { places, ...logbookData } = data;
+
+  const newLogbook = await prisma.logbookEntry.create({
+    data: { ...logbookData, user_id },
   });
+
+  // 리뷰 생성을 백그라운드에서 실행시킴. (await 없음)
+  if (places && places.length > 0 && newLogbook.entry_content) {
+    createReviewsFromLogbook(newLogbook, places);
+  }
+
+  // 사용자에게는 생성된 로그북 정보를 즉시 반환.
+  return newLogbook;
 }
 
 export async function getEntry(logbook_id) {

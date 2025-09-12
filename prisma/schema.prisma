@@ -34,6 +34,8 @@ model User {
   likes         Like[]
   scraps        Scrap[]
   characters    UserCharacter[]
+
+  reviews Review[]
 }
 
 model Character {
@@ -106,6 +108,8 @@ model Location {
   journeys           JourneyLocation[]
   logbookEntries     LogbookEntry[]
 
+  reviews Review[]
+
   @@index([latitude, longitude])
 }
 
@@ -164,6 +168,8 @@ model LogbookEntry {
   location Location?@relation(fields: [location_id], references: [location_id], onDelete: SetNull)
   likes    Like[]
   scraps   Scrap[]
+
+  review Review[]
 }
 
 model Like {
@@ -188,4 +194,23 @@ model Scrap {
   user         User         @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
 
   @@unique([logbook_id, user_id])
+}
+
+model Review {
+  review_id   Int      @id @default(autoincrement())
+  user_id     Int
+  location_id Int
+  logbook_id  Int
+
+  rating      Int      
+  content     Json     
+  
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  user        User         @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+  location    Location     @relation(fields: [location_id], references: [location_id], onDelete: Cascade)
+  logbook     LogbookEntry @relation(fields: [logbook_id], references: [logbook_id], onDelete: Cascade)
+
+  @@unique([logbook_id, location_id])
 }
