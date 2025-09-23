@@ -40,6 +40,11 @@ router.get('/', authRequired, listMine);
  *             required: [journey_title, locations]
  *             properties:
  *               journey_title: { type: string, example: "영통 조용-감성 루트" }
+ *               tags:
+ *                 type: array
+ *                 description: "여정 자체의 태그 목록"
+ *                 items: { type: string }
+ *                 example: ["조용한", "감성", "카페"]
  *               locations:
  *                 type: array
  *                 minItems: 1
@@ -72,7 +77,8 @@ router.post('/', authRequired, create);
  *         required: true
  *         schema: { type: integer }
  *     responses:
- *       200: { description: OK }
+ *       200:
+ *         description: OK
  *       401: { description: Unauthorized }
  *       404: { description: Not Found }
  */
@@ -83,7 +89,7 @@ router.get('/:journeyId', authRequired, detail);
  * /journeys/{journeyId}:
  *   patch:
  *     tags: [Journeys]
- *     summary: 여정 제목/시퀀스 수정
+ *     summary: 여정 제목/태그/시퀀스 수정
  *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - in: path
@@ -98,6 +104,11 @@ router.get('/:journeyId', authRequired, detail);
  *             type: object
  *             properties:
  *               journey_title: { type: string }
+ *               tags:
+ *                 type: array
+ *                 items: { type: string }
+ *                 description: "전체 교체. [] 전달 시 모든 태그 제거, 미전달 시 태그 유지"
+ *                 example: ["데이트", "야외산책"]
  *               locations:
  *                 type: array
  *                 items:

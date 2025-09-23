@@ -6,13 +6,14 @@ export const listMine = async (req, res) => {
 };
 
 export const create = async (req, res) => {
-  const userId = req.user?.user_id ?? req.body.user_id; // 인증 미들웨어 없을 때를 대비
-  const { journey_title, locations } = req.body ?? {};
+  const userId = req.user?.user_id ?? req.body.user_id; // 인증 미들웨어 없을 때 대비
+  const { journey_title, locations, tags } = req.body ?? {};
 
   const created = await svc.createJourney({
     userId,
     journeyTitle: journey_title,
-    locations, // [{ location_id, sequence_number? }, ...]
+    locations,
+    tags, // string[] or null
   });
 
   res.status(201).json(created);
@@ -36,6 +37,3 @@ export const remove = async (req, res) => {
   const result = await svc.removeJourney(req.user.user_id, +req.params.journeyId);
   res.json(result);
 };
-
-// 필요하다면 아래처럼 alias를 추가로 export할 수 있음
-// export const postJourney = create;

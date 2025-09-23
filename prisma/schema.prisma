@@ -154,6 +154,7 @@ model Journey {
   user_id       Int
   journey_title String
   created_at    DateTime          @default(now()) @db.Timestamptz(3)
+  tags          String[]
 
   user      User              @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
   locations JourneyLocation[]

@@ -1,6 +1,14 @@
+// src/services/journeys.service.js
 import { prisma } from '../lib/prisma.js';
 import { ApiError } from '../lib/ApiError.js';
 import { getPagination } from '../utils/pagination.js';
+
+/** 문자열 배열 정규화: trim + 빈값 제거 + 중복 제거 */
+function normalizeTags(raw) {
+  if (!raw) return [];
+  const arr = Array.isArray(raw) ? raw : [raw];
+  return [...new Set(arr.map(String).map(s => s.trim()).filter(Boolean))];
+}
 
 export async function listMine(user_id, q) {
   const { page, limit, skip } = getPagination(q);
@@ -9,19 +17,25 @@ export async function listMine(user_id, q) {
       where: { user_id },
       orderBy: { journey_id: 'desc' },
       skip, take: limit,
-      select: { journey_id: true, journey_title: true, created_at: true }
+      select: {
+        journey_id: true,
+        journey_title: true,
+        created_at: true,
+        tags: true, // ← 태그 포함
+      }
     }),
     prisma.journey.count({ where: { user_id } })
   ]);
   return { page, limit, total, items };
 }
 
-// ✅ 표준 시그니처로 단일화
-export async function createJourney({ userId, journeyTitle, locations }) {
+// ✅ 표준 시그니처로 단일화 + tags 지원
+export async function createJourney({ userId, journeyTitle, locations, tags = [] }) {
   // 1) 기본 검증
   if (!userId) throw new Error('userId is required');
   if (!journeyTitle || typeof journeyTitle !== 'string') throw new Error('journey_title is required');
   if (!Array.isArray(locations) || locations.length === 0) throw new Error('locations must be a non-empty array');
+  if (tags && !Array.isArray(tags)) throw new Error('tags must be an array of strings');
 
   // 고유 location_id만 허용
   const uniqIds = [...new Set(locations.map((l) => Number(l.location_id)))].filter(Boolean);
@@ -46,18 +60,22 @@ export async function createJourney({ userId, journeyTitle, locations }) {
     sequence_number: l.sequence_number ? Number(l.sequence_number) : i + 1,
   }));
 
-  // 2) 트랜잭션: Journey → JourneyLocation[]
+  const tagList = normalizeTags(tags);
+
+  // 2) 트랜잭션: Journey(tags 포함) → JourneyLocation[]
   const result = await prisma.$transaction(async (tx) => {
     const journey = await tx.journey.create({
       data: {
         user_id: Number(userId),
         journey_title: journeyTitle,
+        tags: tagList, // ← 태그 저장
       },
       select: {
         journey_id: true,
         user_id: true,
         journey_title: true,
         created_at: true,
+        tags: true,
       },
     });
 
@@ -97,6 +115,7 @@ export async function createJourney({ userId, journeyTitle, locations }) {
     journey_id: result.journey.journey_id,
     journey_title: result.journey.journey_title,
     created_at: result.journey.created_at,
+    tags: result.journey.tags, // ← 응답 포함
     locations: result.items.map((it) => ({
       journey_location_id: it.journey_location_id,
       sequence_number: it.sequence_number,
@@ -113,20 +132,39 @@ export async function getJourney(user_id, journey_id) {
         include: { location: true },
         orderBy: { sequence_number: 'asc' }
       }
-    }
+    },
+    // include로 가져오면 기본 필드 + tags 모두 포함됨 (스키마에 tags 존재 시)
   });
   if (!j || j.user_id !== user_id) throw new ApiError(404, 'Journey not found');
-  return j;
+
+  // 상세 응답 형태 정리(태그 포함)
+  return {
+    journey_id: j.journey_id,
+    user_id: j.user_id,
+    journey_title: j.journey_title,
+    created_at: j.created_at,
+    tags: j.tags ?? [],
+    locations: j.locations
+  };
 }
 
-export async function updateJourney(user_id, journey_id, { journey_title, locations }) {
+export async function updateJourney(user_id, journey_id, { journey_title, locations, tags }) {
   return prisma.$transaction(async (tx) => {
     const j = await tx.journey.findUnique({ where: { journey_id } });
     if (!j || j.user_id !== user_id) throw new ApiError(404, 'Journey not found');
 
-    if (journey_title) {
-      await tx.journey.update({ where: { journey_id }, data: { journey_title } });
+    // 제목/태그 업데이트
+    const patch = {};
+    if (journey_title) patch.journey_title = journey_title;
+    if (tags !== undefined) {
+      if (tags && !Array.isArray(tags)) throw new Error('tags must be an array of strings');
+      patch.tags = normalizeTags(tags); // [] 전달 시 모두 제거
     }
+    if (Object.keys(patch).length) {
+      await tx.journey.update({ where: { journey_id }, data: patch });
+    }
+
+    // 시퀀스/장소 변경(전체 교체)
     if (Array.isArray(locations)) {
       await tx.journeyLocation.deleteMany({ where: { journey_id } });
       if (locations.length) {
