@@ -36,7 +36,6 @@ app.use('/geo',geocodeRoutes);
 app.use('/reviews', reviewsRoutes);
 app.use('/',locationLikesRoutes);
 
-
 initSwagger(app);
 
 // 404
