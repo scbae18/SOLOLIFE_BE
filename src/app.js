@@ -16,6 +16,7 @@ import onboardingRoutes from './routes/onboarding.routes.js';
 import geocodeRoutes from './routes/naverGeo.route.js';
 import reviewsRoutes from './routes/reviews.routes.js';
 import locationLikesRoutes from './routes/locationLikes.routes.js';
+import searchRoutes from './routes/search.routes.js';
 
 const app = express();
 app.use(cors());
@@ -35,6 +36,7 @@ app.use(onboardingRoutes);
 app.use('/geo',geocodeRoutes);
 app.use('/reviews', reviewsRoutes);
 app.use('/',locationLikesRoutes);
+app.use(searchRoutes);
 
 initSwagger(app);
 
