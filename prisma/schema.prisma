@@ -21,8 +21,8 @@ model User {
   explorer_level      Int       @default(1)
   experience_points   Int       @default(0)
 
-  // 🔥 신규
   points              Int       @default(0)          // 누적 포인트(감소 허용)
+  total_points_earned Int @default(0) //  누적 획득 포인트(감소 없음)
   title               String    @default("초심자")   // 칭호(포인트 구간 자동 반영)
   assets              Int[]     @default([])         // 보유 에셋 id 리스트(최대 3개는 서비스에서 검증)
   current_character_id Int?
@@ -65,6 +65,22 @@ model UserCharacter {
   character Character @relation(fields: [character_id], references: [character_id], onDelete: Cascade)
 
   @@unique([user_id, character_id])
+}
+
+model Asset {
+  asset_id        Int      @id
+  name            String
+  type            String   // "bg" | "prop" | "accessory" 등
+  image_url       String?
+  rarity          String?  // "N" | "R" | "SR" | "SSR"
+  price_points    Int?     // 상점(구매) 가격. 가챠 전용이면 null
+  is_gacha_only   Boolean  @default(false)
+
+  // (옵션) 배치 관련
+  anchor          String?  // "center-bottom" 등
+  z_index         Int?
+  scale           Float?
+  meta            Json?
 }
 
 model Quest {

@@ -22,3 +22,16 @@ export function authRequired(req, _res, next) {
     throw new ApiError(401, 'Invalid token');
   }
 }
+
+export function adminOnly(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+
+  // 다음 중 하나라도 true면 관리자라고 간주
+  const isAdmin =
+    req.user.role === 'admin' ||
+    req.user.is_admin === true ||
+    (Array.isArray(req.user.permissions) && req.user.permissions.includes('admin'));
+
+  if (!isAdmin) return res.status(403).json({ error: 'Forbidden: admin only' });
+  return next();
+}

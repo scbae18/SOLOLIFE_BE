@@ -19,6 +19,9 @@ import locationLikesRoutes from './routes/locationLikes.routes.js';
 import searchRoutes from './routes/search.routes.js';
 import gachaRouter from './routes/gacha.routes.js';
 import questsRouter from './routes/quests.routes.js';
+import adminAssetsRouter from './routes/admin.assets.routes.js';
+import adminQuestsRouter from './routes/admin.quests.routes.js';
+import adminCharactersRouter from './routes/admin.characters.routes.js';
 
 const app = express();
 app.use(cors());
@@ -41,6 +44,9 @@ app.use('/',locationLikesRoutes);
 app.use(searchRoutes);
 app.use(gachaRouter);
 app.use(questsRouter);
+app.use(adminAssetsRouter);
+app.use(adminQuestsRouter);
+app.use(adminCharactersRouter);
 
 initSwagger(app);
 
