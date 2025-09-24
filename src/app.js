@@ -17,6 +17,8 @@ import geocodeRoutes from './routes/naverGeo.route.js';
 import reviewsRoutes from './routes/reviews.routes.js';
 import locationLikesRoutes from './routes/locationLikes.routes.js';
 import searchRoutes from './routes/search.routes.js';
+import gachaRouter from './routes/gacha.routes.js';
+import questsRouter from './routes/quests.routes.js';
 
 const app = express();
 app.use(cors());
@@ -37,6 +39,8 @@ app.use('/geo',geocodeRoutes);
 app.use('/reviews', reviewsRoutes);
 app.use('/',locationLikesRoutes);
 app.use(searchRoutes);
+app.use(gachaRouter);
+app.use(questsRouter);
 
 initSwagger(app);
 

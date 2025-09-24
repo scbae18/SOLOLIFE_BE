@@ -1,8 +1,16 @@
+// src/routes/users.routes.js
 import { Router } from 'express';
 import { authRequired } from '../lib/authMiddleware.js';
 import { getPublic, updateMe, switchCurrent } from '../controllers/users.controller.js';
 
 const r = Router();
+
+/**
+ * @swagger
+ * tags:
+ *   name: Users
+ *   description: 유저 프로필/설정
+ */
 
 /**
  * @swagger
@@ -18,7 +26,10 @@ const r = Router();
  *     responses:
  *       200:
  *         description: OK
- *         content: { application/json: { schema: { $ref: '#/components/schemas/User' } } }
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/User'
  *       403:
  *         description: Private profile
  *       404:
@@ -31,7 +42,8 @@ r.get('/:userId', getPublic);
  * /users/me:
  *   patch:
  *     tags: [Users]
- *     summary: 내 프로필 수정
+ *     summary: 내 프로필/설정 업데이트
+ *     description: 공개여부, 현재 캐릭터, 보유 에셋 교체 가능. (칭호/포인트는 자동 관리)
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
@@ -41,6 +53,11 @@ r.get('/:userId', getPublic);
  *             type: object
  *             properties:
  *               is_public_profile: { type: boolean }
+ *               current_character_id: { type: integer }
+ *               assets:
+ *                 type: array
+ *                 items: { type: integer }
+ *                 description: 최대 3개
  *     responses:
  *       200: { description: OK }
  *       401: { description: Unauthorized }
@@ -53,6 +70,7 @@ r.patch('/me', authRequired, updateMe);
  *   patch:
  *     tags: [Users]
  *     summary: 현재 캐릭터 교체
+ *     description: 보유한 캐릭터 중 하나를 현재 캐릭터로 변경.
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
