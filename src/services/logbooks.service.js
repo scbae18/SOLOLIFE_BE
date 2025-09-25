@@ -93,3 +93,29 @@ export async function toggleScrap(user_id, logbook_id) {
   await prisma.scrap.create({ data: { logbook_id, user_id } });
   return { scrapped: true };
 }
+
+export async function listMine(user_id, q) {
+  const { page, limit, skip } = getPagination(q);
+  const orderBy = getOrder(q, ['created_at','updated_at']);
+
+  const where = { user_id };
+  if (q.locationId) where.location_id = +q.locationId;
+  if (q.journeyId) where.journey_id = +q.journeyId;
+
+  const [items, total] = await Promise.all([
+    prisma.logbookEntry.findMany({
+      where,
+      orderBy,
+      skip, take: limit,
+      select: {
+        logbook_id: true, user_id: true, journey_id: true, location_id: true,
+        entry_title: true, entry_content: true, is_public: true,
+        created_at: true, updated_at: true, image_urls: true,
+        likes: true, scraps: true
+      }
+    }),
+    prisma.logbookEntry.count({ where })
+  ]);
+
+  return { page, limit, total, items };
+}

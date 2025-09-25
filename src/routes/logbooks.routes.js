@@ -1,7 +1,7 @@
 // src/routes/logbooks.routes.js
 import { Router } from 'express';
 import { authRequired, authOptional } from '../lib/authMiddleware.js';
-import { list, create, detail, update, remove, like, scrap } from '../controllers/logbooks.controller.js';
+import { list, create, detail, update, remove, like, scrap, listMine} from '../controllers/logbooks.controller.js';
 
 const r = Router();
 
@@ -335,5 +335,43 @@ r.post('/:logbookId/like', authRequired, like);
  *         description: Unauthorized
  */
 r.post('/:logbookId/scrap', authRequired, scrap);
+
+/**
+ * @swagger
+ * /logbooks/mine:
+ *   get:
+ *     tags: [Logbooks]
+ *     summary: 나의 로그북 목록(비공개 포함)
+ *     description: 인증된 사용자의 로그북을 공개 여부와 상관없이 반환합니다.
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: locationId
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: journeyId
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+ *       - in: query
+ *         name: order
+ *         description: created_at.asc | created_at.desc | updated_at.asc | updated_at.desc
+ *         schema:
+ *           type: string
+ *           pattern: '^(created_at|updated_at)\\.(asc|desc)$'
+ *           example: updated_at.desc
+ *     responses:
+ *       200:
+ *         description: OK
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/LogbookFeedResponse'
+ */
+r.get('/mine', authRequired, listMine);
 
 export default r;
