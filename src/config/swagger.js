@@ -39,6 +39,7 @@ export function initSwagger(app) {
               meta: { type: 'object', nullable: true },
             },
           },
+
           // ===== Domain Schemas (요약 버전) =====
           User: {
             type: 'object',
@@ -46,13 +47,15 @@ export function initSwagger(app) {
               user_id: { type: 'integer' },
               username: { type: 'string' },
               email: { type: 'string', format: 'email' },
-              explorer_level: { type: 'integer' },
-              experience_points: { type: 'integer' },
+              // 아래 두 필드는 현재 Prisma 모델엔 없으면 제거해도 됨
+              explorer_level: { type: 'integer', nullable: true },
+              experience_points: { type: 'integer', nullable: true },
               is_public_profile: { type: 'boolean' },
               current_character_id: { type: 'integer', nullable: true },
               created_at: { type: 'string', format: 'date-time' },
             },
           },
+
           AuthRegisterBody: {
             type: 'object',
             required: ['username', 'email', 'password'],
@@ -77,6 +80,7 @@ export function initSwagger(app) {
               user: { $ref: '#/components/schemas/User' },
             },
           },
+
           Character: {
             type: 'object',
             properties: {
@@ -84,10 +88,21 @@ export function initSwagger(app) {
               character_name: { type: 'string' },
               description: { type: 'string', nullable: true },
               image_url: { type: 'string', nullable: true },
-              unlock_level: { type: 'integer' },
-              is_premium: { type: 'boolean' },
+              unlock_level: { type: 'integer', nullable: true }, // Prisma에 없으면 nullable
+              is_premium: { type: 'boolean', nullable: true },   // Prisma에 없으면 nullable
             },
           },
+
+          // ✅ 추가: Asset 스키마
+          Asset: {
+            type: 'object',
+            properties: {
+              asset_id: { type: 'integer', example: 201 },
+              name: { type: 'string', example: '야전 텐트' },
+              image_url: { type: 'string', nullable: true, example: 'https://cdn.example.com/assets/tent.png' },
+            },
+          },
+
           Quest: {
             type: 'object',
             properties: {
@@ -95,20 +110,21 @@ export function initSwagger(app) {
               user_id: { type: 'integer' },
               quest_title: { type: 'string' },
               quest_description: { type: 'string', nullable: true },
-              required_level: { type: 'integer' },
-              reward_exp: { type: 'integer' },
+              required_level: { type: 'integer', nullable: true },
+              reward_exp: { type: 'integer', nullable: true },
               is_main_quest: { type: 'boolean' },
               is_completed: { type: 'boolean' },
             },
           },
+
           Location: {
             type: 'object',
             properties: {
               location_id: { type: 'integer' },
               location_name: { type: 'string' },
               address: { type: 'string', nullable: true },
-              latitude: { type: 'number' },
-              longitude: { type: 'number' },
+              latitude: { type: 'number', nullable: true },
+              longitude: { type: 'number', nullable: true },
               category: { type: 'string', nullable: true },
               is_solo_friendly: { type: 'boolean' },
               description: { type: 'string', nullable: true },
@@ -118,9 +134,10 @@ export function initSwagger(app) {
               keywords: { type: 'array', items: { type: 'string' } },
               features: { type: 'object', nullable: true },
               opening_hours: { type: 'object', nullable: true },
-              updated_at: { type: 'string', format: 'date-time' },
+              updated_at: { type: 'string', format: 'date-time', nullable: true },
             },
           },
+
           Journey: {
             type: 'object',
             properties: {
@@ -130,6 +147,7 @@ export function initSwagger(app) {
               created_at: { type: 'string', format: 'date-time' },
             },
           },
+
           JourneyLocation: {
             type: 'object',
             properties: {
@@ -139,6 +157,7 @@ export function initSwagger(app) {
               sequence_number: { type: 'integer' },
             },
           },
+
           LogbookEntry: {
             type: 'object',
             properties: {
@@ -155,6 +174,7 @@ export function initSwagger(app) {
           },
         },
       },
+
       tags: [
         { name: 'Auth' },
         { name: 'Users' },
@@ -164,17 +184,22 @@ export function initSwagger(app) {
         { name: 'Journeys' },
         { name: 'Logbooks' },
         { name: 'Recommendations' },
+        { name: 'Assets' }, // ✅ 추가
       ],
+
       security: [], // 개별 엔드포인트에서 security 지정
     },
+
     apis: [
       './src/routes/**/*.js', // 라우터 파일의 JSDoc 읽음
+      // 필요시 컴포넌트 전용 주석 파일도 추가 가능:
+      // './src/docs/swagger.components.js',
     ],
   };
 
   const swaggerSpec = swaggerJsdoc(options);
   app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
 
-  // 원하면 JSON 스펙도 노출
+  // 스펙 JSON 노출
   app.get('/docs.json', (_req, res) => res.json(swaggerSpec));
 }
