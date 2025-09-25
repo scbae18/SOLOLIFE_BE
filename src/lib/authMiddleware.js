@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { ApiError } from './ApiError.js';
+import { prisma } from './prisma.js'; // 🔥 같은 lib 폴더라 ./prisma.js 경로
 
 export function authOptional(req, _res, next) {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
@@ -23,15 +24,24 @@ export function authRequired(req, _res, next) {
   }
 }
 
-export function adminOnly(req, res, next) {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+/**
+ * ✅ 어드민 전용 가드: DB에서 is_admin만 확인
+ * - User.is_admin === true 이면 통과
+ * - 그 외는 403
+ */
+export async function adminOnly(req, res, next) {
+  try {
+    if (!req.user?.user_id) return res.status(401).json({ error: 'Unauthorized' });
 
-  // 다음 중 하나라도 true면 관리자라고 간주
-  const isAdmin =
-    req.user.role === 'admin' ||
-    req.user.is_admin === true ||
-    (Array.isArray(req.user.permissions) && req.user.permissions.includes('admin'));
+    const u = await prisma.user.findUnique({
+      where: { user_id: req.user.user_id },
+      select: { is_admin: true }
+    });
 
-  if (!isAdmin) return res.status(403).json({ error: 'Forbidden: admin only' });
-  return next();
+    if (!u?.is_admin) return res.status(403).json({ error: 'Forbidden: admin only' });
+    return next();
+  } catch (e) {
+    // 예외 발생 시 500
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
 }

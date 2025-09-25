@@ -18,24 +18,19 @@ const r = Router();
  *   post:
  *     tags: [Admin - Characters]
  *     summary: 캐릭터 생성(관리자)
- *     description: 신규 캐릭터 메타데이터를 등록합니다. 필드 구성은 Character 스키마에 맞추세요.
- *     security:
- *       - bearerAuth: []
+ *     description: 신규 캐릭터 메타데이터를 등록합니다.
+ *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
- *             required: [name]
+ *             required: [character_name]
  *             properties:
- *               name:
+ *               character_name:
  *                 type: string
  *                 example: "루키 탐험가"
- *               rarity:
- *                 type: string
- *                 description: 레어도(N/R/SR/SSR 등)
- *                 example: "R"
  *               image_url:
  *                 type: string
  *                 format: uri
@@ -51,36 +46,22 @@ const r = Router();
  *             schema:
  *               type: object
  *               properties:
- *                 character_id:
- *                   type: integer
- *                   example: 7
- *                 name:
- *                   type: string
- *                   example: "루키 탐험가"
- *                 rarity:
- *                   type: string
- *                   example: "R"
- *                 image_url:
- *                   type: string
- *                   format: uri
- *                   example: "https://cdn.example.com/characters/rookie.png"
- *                 description:
- *                   type: string
- *                   example: "탐험을 막 시작한 초보 캐릭터"
- *                 created_at:
- *                   type: string
- *                   format: date-time
- *                   example: "2025-09-24T04:12:33.000Z"
- *       400:
- *         description: 잘못된 요청 본문(스키마 불일치 등)
- *       401:
- *         description: 인증 실패(토큰 누락/유효하지 않음)
- *       403:
- *         description: 관리자 권한 없음
+ *                 character_id:   { type: integer, example: 7 }
+ *                 character_name: { type: string,  example: "루키 탐험가" }
+ *                 image_url:      { type: string,  format: uri, example: "https://cdn.example.com/characters/rookie.png" }
+ *                 description:    { type: string,  example: "탐험을 막 시작한 초보 캐릭터" }
+ *       400: { description: 잘못된 요청 본문 }
+ *       401: { description: 인증 실패 }
+ *       403: { description: 관리자 권한 없음 }
  */
 r.post('/admin/characters', authRequired, adminOnly, async (req, res, next) => {
   try {
-    const created = await prisma.character.create({ data: req.body });
+    const { character_name, image_url, description } = req.body ?? {};
+    if (!character_name) return res.status(400).json({ error: 'character_name required' });
+
+    const created = await prisma.character.create({
+      data: { character_name, image_url, description },
+    });
     res.json(created);
   } catch (e) {
     next(e);

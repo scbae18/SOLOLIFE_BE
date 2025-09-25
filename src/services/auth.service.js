@@ -39,7 +39,6 @@ export async function me(user_id) {
     where: { user_id },
     select: {
       user_id: true, username: true, email: true, created_at: true,
-      explorer_level: true, experience_points: true,
       points: true, title: true, assets: true,
       is_public_profile: true,
       current_character_id: true

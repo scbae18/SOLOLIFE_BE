@@ -31,6 +31,6 @@ export function listMyCharacters(user_id) {
   return prisma.userCharacter.findMany({
     where: { user_id },
     include: { character: true },
-    orderBy: { unlocked_at: 'desc' }
+    orderBy: { character_id: 'desc' }
   });
 }

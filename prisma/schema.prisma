@@ -14,23 +14,22 @@ generator client {
 // --- 여기부터 모델 정의 시작 ---
 
 model User {
-  user_id             Int       @id @default(autoincrement())
-  username            String    @unique @db.VarChar(255)
-  email               String    @unique @db.VarChar(255)
-  password_hash       String
-  explorer_level      Int       @default(1)
-  experience_points   Int       @default(0)
-
-  points              Int       @default(0)          // 누적 포인트(감소 허용)
-  total_points_earned Int @default(0) //  누적 획득 포인트(감소 없음)
-  title               String    @default("초심자")   // 칭호(포인트 구간 자동 반영)
-  assets              Int[]     @default([])         // 보유 에셋 id 리스트(최대 3개는 서비스에서 검증)
+  user_id              Int       @id @default(autoincrement())
+  username             String    @unique @db.VarChar(255)
+  email                String    @unique @db.VarChar(255)
+  password_hash        String
+  points               Int       @default(0)
+  total_points_earned  Int       @default(0)
+  title                String    @default("초심자")
+  assets               Int[]     @default([])
   current_character_id Int?
-  is_public_profile   Boolean   @default(true)
-  created_at          DateTime  @default(now()) @db.Timestamptz(3)
+  is_public_profile    Boolean   @default(true)
+  created_at           DateTime  @default(now()) @db.Timestamptz(3)
+  is_admin             Boolean   @default(false)
 
-  // 기존
-  currentCharacter  Character?    @relation("CurrentUserCharacter", fields: [current_character_id], references: [character_id])
+  // 현재 장착 캐릭터
+  currentCharacter Character? @relation("CurrentUserCharacter", fields: [current_character_id], references: [character_id])
+
   onboarding_answers Json?
 
   quests         Quest[]
@@ -38,49 +37,40 @@ model User {
   logbookEntries LogbookEntry[]
   likes          Like[]
   scraps         Scrap[]
-  characters     UserCharacter[]   // 보유 캐릭터는 계속 관계 테이블로 관리(권한/중복 방지)
+  // 보유 캐릭터(종류만) — 관계 테이블
+  characters     UserCharacter[]
   reviews        Review[]
   locationLikes  LocationLike[]
 }
 
 model Character {
-  character_id   Int             @id @default(autoincrement())
-  character_name String          @db.VarChar(255)
-  description    String?         @db.Text
-  image_url      String?         @db.VarChar(255)
-  unlock_level   Int
-  is_premium     Boolean         @default(false)
+  character_id   Int     @id @default(autoincrement())
+  character_name String  @db.VarChar(255)
+  description    String? @db.Text
+  image_url      String? @db.VarChar(255)
 
-  unlockedByUsers UserCharacter[]
-  currentUsers    User[]          @relation("CurrentUserCharacter")
+  currentUsers   User[]  @relation("CurrentUserCharacter")
+  // 관계 역방향
+  users UserCharacter[]
 }
 
 model UserCharacter {
-  user_character_id Int      @id @default(autoincrement())
-  user_id           Int
-  character_id      Int
-  unlocked_at       DateTime @default(now()) @db.Timestamptz(3)
+  // “종류만” 관리: 별도 id/시간 제거, 복합 PK로 중복 방지
+  user_id      Int
+  character_id Int
 
-  user      User     @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+  user      User      @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
   character Character @relation(fields: [character_id], references: [character_id], onDelete: Cascade)
 
-  @@unique([user_id, character_id])
+  @@id([user_id, character_id])       // 복합 기본키 = 곧 유일성 보장
+  @@index([user_id])
+  @@index([character_id])
 }
 
 model Asset {
   asset_id        Int      @id
   name            String
-  type            String   // "bg" | "prop" | "accessory" 등
   image_url       String?
-  rarity          String?  // "N" | "R" | "SR" | "SSR"
-  price_points    Int?     // 상점(구매) 가격. 가챠 전용이면 null
-  is_gacha_only   Boolean  @default(false)
-
-  // (옵션) 배치 관련
-  anchor          String?  // "center-bottom" 등
-  z_index         Int?
-  scale           Float?
-  meta            Json?
 }
 
 model Quest {
@@ -89,9 +79,6 @@ model Quest {
   title          String
   is_main_quest  Boolean  @default(false)
   is_completed   Boolean  @default(false)
-  reward_exp     Int      @default(0)
-
-  // 🔥 신규
   reward_points  Int      @default(0)  // 퀘스트 포인트 보상
 
   user User @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
