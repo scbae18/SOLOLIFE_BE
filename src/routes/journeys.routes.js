@@ -1,6 +1,6 @@
 import { Router } from 'express';
+import { listMine, create, detail, update, remove, generatePreview } from '../controllers/journeys.controller.js';
 import { authRequired } from '../lib/authMiddleware.js';
-import { listMine, create, detail, update, remove } from '../controllers/journeys.controller.js';
 
 const router = Router();
 
@@ -62,6 +62,7 @@ router.get('/', authRequired, listMine);
  *       201: { description: Created }
  *       401: { description: Unauthorized }
  */
+router.post('/preview', authRequired, generatePreview);
 router.post('/', authRequired, create);
 
 /**
