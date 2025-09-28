@@ -160,6 +160,7 @@ model Journey {
   journey_id    Int               @id @default(autoincrement())
   user_id       Int
   journey_title String
+  
   journey_summary String? @db.Text
   created_at    DateTime          @default(now()) @db.Timestamptz(3)
   tags          String[]
