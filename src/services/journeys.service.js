@@ -30,20 +30,18 @@ export async function listMine(user_id, q) {
 }
 
 // ✅ 표준 시그니처로 단일화 + tags 지원
-export async function createJourney({ userId, journeyTitle, locations, tags = [] }) {
+export async function createJourney({ userId, journeyTitle, journeySummary, locations, tags = [] }) { // ⭐️ 1. journeySummary 파라미터 추가
   // 1) 기본 검증
   if (!userId) throw new Error('userId is required');
   if (!journeyTitle || typeof journeyTitle !== 'string') throw new Error('journey_title is required');
   if (!Array.isArray(locations) || locations.length === 0) throw new Error('locations must be a non-empty array');
   if (tags && !Array.isArray(tags)) throw new Error('tags must be an array of strings');
 
-  // 고유 location_id만 허용
+  // ... (이하 유효성 검사 로직은 기존과 동일) ...
   const uniqIds = [...new Set(locations.map((l) => Number(l.location_id)))].filter(Boolean);
   if (uniqIds.length !== locations.length) {
     throw new Error('locations contain duplicate location_id');
   }
-
-  // 존재 여부 확인
   const exist = await prisma.location.findMany({
     where: { location_id: { in: uniqIds } },
     select: { location_id: true },
@@ -53,13 +51,10 @@ export async function createJourney({ userId, journeyTitle, locations, tags = []
     const missing = uniqIds.filter((id) => !existSet.has(id));
     throw new Error(`invalid location_id(s): ${missing.join(', ')}`);
   }
-
-  // sequence_number 부여(없으면 1..N)
   const withSeq = locations.map((l, i) => ({
     location_id: Number(l.location_id),
     sequence_number: l.sequence_number ? Number(l.sequence_number) : i + 1,
   }));
-
   const tagList = normalizeTags(tags);
 
   // 2) 트랜잭션: Journey(tags 포함) → JourneyLocation[]
@@ -68,17 +63,20 @@ export async function createJourney({ userId, journeyTitle, locations, tags = []
       data: {
         user_id: Number(userId),
         journey_title: journeyTitle,
-        tags: tagList, // ← 태그 저장
+        journey_summary: journeySummary, // ⭐️ 2. DB에 summary 저장
+        tags: tagList,
       },
       select: {
         journey_id: true,
         user_id: true,
         journey_title: true,
+        journey_summary: true, // ⭐️ 2. select에 summary 추가
         created_at: true,
         tags: true,
       },
     });
 
+    // ... (JourneyLocation 생성 및 조회 로직은 기존과 동일) ...
     await tx.journeyLocation.createMany({
       data: withSeq.map((x) => ({
         journey_id: journey.journey_id,
@@ -86,7 +84,6 @@ export async function createJourney({ userId, journeyTitle, locations, tags = []
         sequence_number: x.sequence_number,
       })),
     });
-
     const items = await tx.journeyLocation.findMany({
       where: { journey_id: journey.journey_id },
       orderBy: { sequence_number: 'asc' },
@@ -114,8 +111,9 @@ export async function createJourney({ userId, journeyTitle, locations, tags = []
   return {
     journey_id: result.journey.journey_id,
     journey_title: result.journey.journey_title,
+    journey_summary: result.journey.journey_summary, // ⭐️ 3. 최종 응답에 summary 추가
     created_at: result.journey.created_at,
-    tags: result.journey.tags, // ← 응답 포함
+    tags: result.journey.tags,
     locations: result.items.map((it) => ({
       journey_location_id: it.journey_location_id,
       sequence_number: it.sequence_number,
