@@ -63,6 +63,14 @@ function filterWithinRadius(items, center, radiusKm = 3) {
   });
 }
 
+/** Google Places Photo URL 생성 (photo_reference → 실제 URL) */
+function buildGooglePhotoUrl(ref) {
+  if (!ref) return null;
+  const key = process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
+  if (!key) return null;
+  return `https://maps.googleapis.com/maps/api/place/photo?maxwidth=1600&photo_reference=${encodeURIComponent(ref)}&key=${encodeURIComponent(key)}`;
+}
+
 /** ================== 공통: 사진 주입 (절대 크래시 금지) ================== */
 async function attachPhotosToItems(items) {
   try {
@@ -70,34 +78,62 @@ async function attachPhotosToItems(items) {
     const ids = [...new Set(items.map(x => Number(x.location_id)).filter(Boolean))];
     if (!ids.length) return items;
 
-    // 1) 관계 테이블 시도 (LocationPhoto)
-    try {
-      const photos = await prisma.locationPhoto.findMany({
-        where: { location_id: { in: ids } },
-        select: { location_id: true, position: true, remote_url: true, photo_url: true, url: true },
-        orderBy: [{ location_id: 'asc' }, { position: 'asc' }]
-      });
-      const grouped = new Map();
-      for (const p of photos) {
-        const url = p.remote_url || p.photo_url || p.url;
-        if (!url) continue;
-        const arr = grouped.get(p.location_id) ?? [];
-        if (arr.length < 3) arr.push(url);
-        grouped.set(p.location_id, arr);
+    // 1) LocationPhoto에서 최대 3장 수집 (remote_url 우선, 없으면 photo_reference로 URL 생성)
+    const photos = await prisma.locationPhoto.findMany({
+      where: { location_id: { in: ids } },
+      select: {
+        location_id: true,
+        position: true,
+        remote_url: true,
+        photo_reference: true,
+        // attributions: true, // 필요 시 노출용으로 사용 가능
+      },
+      orderBy: [{ location_id: 'asc' }, { position: 'asc' }]
+    });
+
+    const grouped = new Map();
+    for (const p of photos) {
+      const url = p.remote_url || buildGooglePhotoUrl(p.photo_reference);
+      if (!url) continue;
+      const arr = grouped.get(p.location_id) ?? [];
+      if (arr.length < 3) arr.push(url);
+      grouped.set(p.location_id, arr);
+    }
+
+    // 2) item별로 최대 3장, 그리고 "1장 이상이면 3장으로 패딩"
+    let result = items.map(it => {
+      const key = Number(it.location_id);
+      let ph = (grouped.get(key) ?? []).slice(0, 3);
+
+      if (ph.length > 0 && ph.length < 3) {
+        const last = ph[ph.length - 1];
+        while (ph.length < 3) ph.push(last);
       }
-      return items.map(it => ({
-        ...it,
-        photos: grouped.get(Number(it.location_id)) ?? []
-      }));
-    } catch {
-      // 2) 폴백: Location.fallback_photo_url 1장이라도
+      return { ...it, photos: ph };
+    });
+
+    // 3) 완전 무사진(0장)인 항목에 대해 Location.fallback_photo_url 보조 적용 (+패딩)
+    const needFallbackIds = result.filter(r => (r.photos?.length ?? 0) === 0).map(r => Number(r.location_id));
+    if (needFallbackIds.length) {
       const locs = await prisma.location.findMany({
-        where: { location_id: { in: ids } },
+        where: { location_id: { in: needFallbackIds } },
         select: { location_id: true, fallback_photo_url: true }
       });
-      const map = new Map(locs.map(l => [l.location_id, l.fallback_photo_url ? [l.fallback_photo_url] : []]));
-      return items.map(it => ({ ...it, photos: map.get(Number(it.location_id)) ?? [] }));
+      const fbMap = new Map(locs.map(l => [l.location_id, l.fallback_photo_url].filter(Boolean)));
+
+      result = result.map(r => {
+        if ((r.photos?.length ?? 0) > 0) return r;
+        const fb = fbMap.get(Number(r.location_id));
+        let ph = fb ? [fb] : [];
+        if (ph.length > 0 && ph.length < 3) {
+          const last = ph[ph.length - 1];
+          while (ph.length < 3) ph.push(last);
+        }
+        return { ...r, photos: ph };
+      });
     }
+
+    return result;
   } catch {
     // 최후의 방어: 사진 없이 반환
     return items.map(it => ({ ...it, photos: [] }));
@@ -456,7 +492,7 @@ export async function recommendNext({
     if (!centerForScore || it.latitude == null || it.longitude == null) return base;
     const dist = haversineKm(centerForScore, { lat: Number(it.latitude), lng: Number(it.longitude) });
     return base - Math.min(dist, 10) * 0.3;
-    };
+  };
 
   const picks = [];
   const pool = [...filtered];
