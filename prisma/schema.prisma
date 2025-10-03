@@ -22,7 +22,7 @@ model User {
   onboarding_answers   Json?
   assets               Int[]           @default([])
   points               Int             @default(0)
-  title                String          @default("초심자")
+  title                String          @default("🌱 초보 탐험가 (Lv.1)")
   total_points_earned  Int             @default(0)
   is_admin             Boolean         @default(false)
 
