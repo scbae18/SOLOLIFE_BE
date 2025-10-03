@@ -7,8 +7,8 @@ generator client {
 }
 
 datasource db {
-  provider          = "postgresql"
-  url               = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -25,6 +25,8 @@ model User {
   title                String          @default("초심자")
   total_points_earned  Int             @default(0)
   is_admin             Boolean         @default(false)
+
+  // Relations
   journeys             Journey[]
   likes                Like[]
   locationLikes        LocationLike[]
@@ -32,7 +34,11 @@ model User {
   quests               Quest[]
   reviews              Review[]
   scraps               Scrap[]
+
+  // current selected character
   currentCharacter     Character?      @relation("CurrentUserCharacter", fields: [current_character_id], references: [character_id])
+
+  // owned/unlocked characters
   characters           UserCharacter[]
 }
 
@@ -41,13 +47,18 @@ model Character {
   character_name String          @db.VarChar(255)
   description    String?
   image_url      String?         @db.VarChar(255)
+
+  // reverse side of user's current character
   currentUsers   User[]          @relation("CurrentUserCharacter")
+
+  // users who own this character
   users          UserCharacter[]
 }
 
 model UserCharacter {
   user_id      Int
   character_id Int
+
   character    Character @relation(fields: [character_id], references: [character_id], onDelete: Cascade)
   user         User      @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
 
@@ -57,9 +68,10 @@ model UserCharacter {
 }
 
 model Asset {
-  asset_id  Int     @id
+  asset_id  Int    @id @default(autoincrement())
   name      String
   image_url String?
+  type      Int
 }
 
 model Quest {
@@ -69,6 +81,7 @@ model Quest {
   is_completed  Boolean @default(false)
   reward_points Int     @default(0)
   title         String
+
   user          User    @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
 }
 
@@ -81,7 +94,7 @@ model Location {
   category           String?
   is_solo_friendly   Boolean           @default(true)
   description        String?
-  created_at         DateTime          @default(now())
+  created_at         DateTime          @default(now()) @db.Timestamptz(3)
   dedupe_signature   String?           @unique
   features           Json?
   keywords           String[]
@@ -96,10 +109,11 @@ model Location {
   photo_attribution  Json?
   photo_reference    String?
   thumbnail_url      String?
+
+  // Relations
   journeys           JourneyLocation[]
   likesByUsers       LocationLike[]
   photos             LocationPhoto[]
-  logbookEntries     LogbookEntry[]
   reviews            Review[]
 
   @@index([latitude, longitude])
@@ -110,6 +124,7 @@ model LocationLike {
   user_id     Int
   location_id Int
   created_at  DateTime @default(now()) @db.Timestamptz(3)
+
   location    Location @relation(fields: [location_id], references: [location_id], onDelete: Cascade)
   user        User     @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
 
@@ -127,8 +142,9 @@ model LocationPhoto {
   photo_reference String
   attributions    String[]
   remote_url      String?
-  created_at      DateTime @default(now())
+  created_at      DateTime @default(now()) @db.Timestamptz(3)
   updated_at      DateTime @updatedAt
+
   location        Location @relation(fields: [location_id], references: [location_id], onDelete: Cascade)
 
   @@unique([location_id, position])
@@ -142,6 +158,7 @@ model Journey {
   created_at      DateTime          @default(now()) @db.Timestamptz(3)
   tags            String[]
   journey_summary String?
+
   user            User              @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
   locations       JourneyLocation[]
   logbookEntries  LogbookEntry[]
@@ -152,26 +169,37 @@ model JourneyLocation {
   journey_id          Int
   location_id         Int
   sequence_number     Int
+
   journey             Journey  @relation(fields: [journey_id], references: [journey_id], onDelete: Cascade)
   location            Location @relation(fields: [location_id], references: [location_id], onDelete: Cascade)
+
+  @@index([journey_id])
+  @@index([location_id])
 }
 
 model LogbookEntry {
   logbook_id    Int       @id @default(autoincrement())
   user_id       Int
   journey_id    Int?
-  location_id   Int?
+
+  // 여러 장소를 배열로 보관 (FK 없음)
+  location_ids  Int[]     @default([])
+
   entry_title   String
   entry_content String?
   is_public     Boolean   @default(true)
   created_at    DateTime  @default(now()) @db.Timestamptz(3)
   image_urls    Json?
+
+  // Relations
   likes         Like[]
   journey       Journey?  @relation(fields: [journey_id], references: [journey_id])
-  location      Location? @relation(fields: [location_id], references: [location_id])
   user          User      @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
   review        Review[]
   scraps        Scrap[]
+
+  @@index([user_id])
+  @@index([journey_id])
 }
 
 model Like {
@@ -179,10 +207,13 @@ model Like {
   logbook_id   Int
   user_id      Int
   created_at   DateTime     @default(now()) @db.Timestamptz(3)
+
   logbookEntry LogbookEntry @relation(fields: [logbook_id], references: [logbook_id], onDelete: Cascade)
   user         User         @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
 
   @@unique([logbook_id, user_id])
+  @@index([logbook_id])
+  @@index([user_id])
 }
 
 model Scrap {
@@ -190,10 +221,13 @@ model Scrap {
   logbook_id   Int
   user_id      Int
   created_at   DateTime     @default(now()) @db.Timestamptz(3)
+
   logbookEntry LogbookEntry @relation(fields: [logbook_id], references: [logbook_id], onDelete: Cascade)
   user         User         @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
 
   @@unique([logbook_id, user_id])
+  @@index([logbook_id])
+  @@index([user_id])
 }
 
 model Review {
@@ -203,11 +237,15 @@ model Review {
   logbook_id  Int
   rating      Int
   content     Json
-  created_at  DateTime     @default(now())
+  created_at  DateTime     @default(now()) @db.Timestamptz(3)
   updated_at  DateTime     @updatedAt
+
   location    Location     @relation(fields: [location_id], references: [location_id], onDelete: Cascade)
   logbook     LogbookEntry @relation(fields: [logbook_id], references: [logbook_id], onDelete: Cascade)
   user        User         @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
 
   @@unique([logbook_id, location_id])
+  @@index([user_id])
+  @@index([location_id])
+  @@index([logbook_id])
 }

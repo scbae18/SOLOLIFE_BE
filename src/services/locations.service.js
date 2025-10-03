@@ -79,8 +79,6 @@ export function getLocation(location_id) {
   return prisma.location.findUnique({
     where: { location_id },
     include: {
-      journeys: false,
-      logbookEntries: { select: { logbook_id: true }, take: 3 }
     }
   });
 }

@@ -5,14 +5,11 @@ import crypto from "crypto";
 import { PrismaClient } from "@prisma/client";
 
 /**
- * 음식점(영통권) 크롤러 확장판
+ * 음식점(영통권) 크롤러 확장판 - 좌표만 사용 / description 제외
  * - 키워드: "1인석"만 저장 (오마카세 전면 제외)
- * - 지역 바리에이션: 동/역/랜드마크/인접구 + 관용표현(근처/역세권/로데오 등)
- * - 수식어 풀 확대 + 2/3콤보 + 해시태그 확장
- * - 템플릿 확장(신상/오픈/리뉴얼/웨이팅없는 등)
- * - Naver Local 페이지네이션 + 블로그/웹 스니펫 캐시
- * - Google TextSearch/Details → 좌표/영업시간/types
- * - 합성 단계 조기 종료(early break) + 진행 로그 + 워밍업 핑
+ * - 지역 바리에이션/수식어/해시태그 확장, Naver Local 페이지네이션 + 스니펫 보강
+ * - Google TextSearch → { place_id, lat, lng }만 사용
+ * - description / opening_hours / types / price_level 전부 저장하지 않음
  */
 
 const prisma = new PrismaClient();
@@ -26,7 +23,6 @@ const REGION_ALIASES = [
 ];
 const SUBAREAS = [
   "영통동", "망포동", "매탄동", "원천동",
-  // 인접 동(교차검색)
   "이의동", "하동", "상현동", "우만동", "권선동", "매교동",
 ];
 const STATIONS = [
@@ -53,7 +49,7 @@ const CATEGORY_SYNONYMS = {
     "국밥", "설렁탕", "곰탕", "순대국", "냉면",
     "탕", "전골", "샤브샤브", "쭈꾸미", "해물", "회",
     "족발", "보쌈", "찜닭", "칼국수", "스테이크", "버거", "치킨",
-    // (오마카세류는 후처리 필터에서 제외)
+    // 오마카세류는 후처리로 제외
   ],
 };
 
@@ -100,27 +96,24 @@ const QUERY_TEMPLATES = [
   "{region} #{modifier} #{category}",
 ];
 
-// ===== 상한/콤보 제어(보수적 스타트값) =====
+// ===== 상한/콤보 제어 =====
 const DISPLAY = 30;
-const MAX_PAGES_PER_QUERY = 4;        // 6 → 4 (시동 안정)
-const MAX_QUERIES_PER_CATEGORY = 180; // 360 → 180
-const MAX_ITEMS_PER_CATEGORY   = 400; // 800 → 400
-const BASE_DELAY_MS = 140;            // 120 → 140 (안정성↑)
+const MAX_PAGES_PER_QUERY = 4;
+const MAX_QUERIES_PER_CATEGORY = 180;
+const MAX_ITEMS_PER_CATEGORY   = 400;
+const BASE_DELAY_MS = 140;
 
-// 콤보 옵션
 const USE_COMBO_2 = true;
 const USE_COMBO_3 = true;
-const MAX_3_COMBOS = 400;             // 3콤보 최대 사용 개수
+const MAX_3_COMBOS = 400;
 
-// opening_hours가 없으면 features.openingHours 폴백 사용 여부
-const USE_FEATURES_FALLBACK = false;
+const USE_FEATURES_FALLBACK = false; // (영업시간 사용 안 하므로 의미 없음)
 
 // =================== API URL/ENV ===================
 const NAVER_LOCAL_URL       = "https://openapi.naver.com/v1/search/local.json";
 const NAVER_BLOG_URL        = "https://openapi.naver.com/v1/search/blog.json";
 const NAVER_WEB_URL         = "https://openapi.naver.com/v1/search/webkr.json";
 const GOOGLE_PLACES_TEXT    = "https://maps.googleapis.com/maps/api/place/textsearch/json";
-const GOOGLE_PLACES_DETAILS = "https://maps.googleapis.com/maps/api/place/details/json";
 
 const {
   NAVER_OPENAPI_CLIENT_ID,
@@ -132,7 +125,7 @@ if (!NAVER_OPENAPI_CLIENT_ID || !NAVER_OPENAPI_CLIENT_SECRET) {
   throw new Error("NAVER_OPENAPI_CLIENT_ID / NAVER_OPENAPI_CLIENT_SECRET 누락");
 }
 if (!GOOGLE_MAPS_API_KEY) {
-  console.warn("[env] GOOGLE_MAPS_API_KEY 누락 (좌표/영업시간/types 채우려면 필요)");
+  console.warn("[env] GOOGLE_MAPS_API_KEY 누락 (좌표 채우려면 필요)");
 }
 
 const localHeaders = {
@@ -302,6 +295,8 @@ async function fetchWebSnippets(query, display=20) {
   SNIPPET_CACHE.set(key, merged);
   return merged;
 }
+
+// Google: TextSearch → place_id, lat, lng (ONLY)
 async function searchPlaceByText(name, address) {
   if (!GOOGLE_MAPS_API_KEY) return null;
   const qPrimary = address ? `${name} ${address}` : `${name} ${REGION_CANON}`;
@@ -317,22 +312,6 @@ async function searchPlaceByText(name, address) {
   if (!found) found = await tryQuery(qFallback);
   return found;
 }
-async function fetchPlaceDetails(placeId) {
-  if (!placeId || !GOOGLE_MAPS_API_KEY) return null;
-  const { data } = await withRetry(() =>
-    axios.get(GOOGLE_PLACES_DETAILS, {
-      params: { place_id: placeId, key: GOOGLE_MAPS_API_KEY, fields: "opening_hours,types,price_level", language: "ko" },
-      timeout: 8000,
-    })
-  );
-  const r = data?.result || {};
-  const oh = r.opening_hours || null;
-  return {
-    opening_hours: oh ? { open_now: oh.open_now ?? null, weekday_text: oh.weekday_text ?? null, periods: oh.periods ?? null } : null,
-    types: Array.isArray(r.types) ? r.types : [],
-    price_level: typeof r.price_level === "number" ? r.price_level : null,
-  };
-}
 
 // =================== 업서트 ===================
 async function upsertLocation(item, catLabel) {
@@ -344,7 +323,7 @@ async function upsertLocation(item, catLabel) {
 
   const name = stripHtml(item.title);
   const address = item.roadAddress || item.address || null;
-  const desc = stripHtml(item.description || "");
+  const desc = stripHtml(item.description || ""); // 추론용 텍스트로만 사용 (DB 저장 X)
   const dedupe_signature = makeDedupeSig({ name, address });
 
   const existing = await prisma.location.findUnique({ where: { dedupe_signature } });
@@ -359,24 +338,13 @@ async function upsertLocation(item, catLabel) {
   }
   const baseTextRaw = `${name} ${desc} ${extraText||""} ${catLabel||""}`;
 
-  // Google 좌표 + details
+  // Google 좌표만
   let coords = { place_id: null, lat: null, lng: null };
   try {
     const found = await searchPlaceByText(name, address);
     if (found) coords = found;
     console.log(`[google:text] ${name} → pid=${coords.place_id || "none"}, lat=${coords.lat}, lng=${coords.lng}`);
   } catch (e) { console.warn("[google:text] error", e?.message || e); }
-
-  let opening_hours = null;
-  let place_types = [];
-  try {
-    if (coords.place_id) {
-      const details = await fetchPlaceDetails(coords.place_id);
-      opening_hours = details?.opening_hours || null;
-      place_types = details?.types || [];
-    }
-    console.log(`[google:details] ${name} → hours=${opening_hours ? "ok" : "none"}, types=${place_types.join(",") || "none"}`);
-  } catch (e) { console.warn("[google:details] error", e?.message || e); }
 
   // ====== 추론 ======
   const moodTags = inferMoodTags(baseTextRaw);
@@ -393,22 +361,19 @@ async function upsertLocation(item, catLabel) {
     moods: mergedMoodFlat,
     _debugSnippet: baseTextRaw.slice(0, 200),
   };
-  const featuresFinal = USE_FEATURES_FALLBACK && opening_hours
-    ? { ...featuresJson, openingHours: opening_hours }
-    : featuresJson;
 
-  // 업서트
+  // 업서트 (description/영업시간 등 제외)
   const updatePayload = {
     location_name: name,
     address,
     latitude:  (coords.lat ?? existing?.latitude ?? null),
     longitude: (coords.lng ?? existing?.longitude ?? null),
     category: "음식점",
-    description: desc || null,
+    // description: 제외 (기존 값 유지)
     keywords: { set: mergedKeywords }, // ["1인석"]만
-    features: featuresFinal,
+    features: featuresJson,
     features_flat: { set: mergedMoodFlat },
-    opening_hours: USE_FEATURES_FALLBACK ? undefined : opening_hours,
+    ...(coords.place_id ? { google_place_id: coords.place_id } : {}),
     updated_at: new Date(),
   };
   const createPayload = {
@@ -418,11 +383,11 @@ async function upsertLocation(item, catLabel) {
     longitude: coords.lng,
     category: "음식점",
     is_solo_friendly: true,
-    description: desc || null,
+    // description: 제외 (NULL/기본값)
     keywords: mergedKeywords,
-    features: featuresFinal,
+    features: featuresJson,
     features_flat: mergedMoodFlat,
-    opening_hours: USE_FEATURES_FALLBACK ? undefined : opening_hours,
+    ...(coords.place_id ? { google_place_id: coords.place_id } : {}),
     dedupe_signature,
     created_at: new Date(),
     updated_at: new Date(),
@@ -438,8 +403,7 @@ async function upsertLocation(item, catLabel) {
     `[upsert] ${name} (${address || "no-addr"}) → id=${loc.location_id}` +
     ` | lat=${loc.latitude ?? "null"}, lng=${loc.longitude ?? "null"}` +
     ` | moods=[${mergedMoodFlat.join(", ")}]` +
-    ` | keywords=[${mergedKeywords.join(", ")}]` +
-    (opening_hours ? " | hours✅" : " | hours✖")
+    ` | keywords=[${mergedKeywords.join(", ")}]`
   );
   return loc;
 }
@@ -452,7 +416,7 @@ function composeRegionCombos() {
   // 단일
   [...REGION_ALIASES, ...SUBAREAS, ...STATIONS, ...LANDMARKS].forEach(push);
 
-  // alias × (동|역|랜드마크) — 상한 가드
+  // alias × (동|역|랜드마크)
   for (const a of REGION_ALIASES) {
     for (const b of [...SUBAREAS, ...STATIONS, ...LANDMARKS]) {
       push(`${a} ${b}`);
@@ -460,7 +424,7 @@ function composeRegionCombos() {
     }
   }
 
-  // 인접 구 교차 + 대표 포인트 결합 — 상한 가드
+  // 인접 구 교차 + 대표 포인트 결합
   for (const adj of ADJACENT_DISTRICTS) {
     push(`${adj} 인근`);
     for (const b of [...STATIONS, ...LANDMARKS]) {
@@ -469,7 +433,7 @@ function composeRegionCombos() {
     }
   }
 
-  // 관용 표현 — 상한 가드
+  // 관용 표현
   const vicinity = ["근처", "주변", "인근", "부근", "역세권", "역 근처", "로데오"];
   for (const r of [...base]) {
     for (const v of vicinity) {
@@ -490,7 +454,7 @@ function composeModifierCombos() {
   // 단일
   uniq.forEach(m => out.add(m));
 
-  // 2콤보 — 상한 가드
+  // 2콤보
   if (USE_COMBO_2) {
     for (const c of kCombinations(uniq, 2)) {
       out.add(canon(c.join(" ")));
@@ -498,7 +462,7 @@ function composeModifierCombos() {
     }
   }
 
-  // 3콤보 — 상한 가드
+  // 3콤보
   if (USE_COMBO_3) {
     let cnt = 0;
     for (const c of kCombinations(uniq, 3)) {
@@ -531,7 +495,7 @@ function composeCategoryVariants(cat) {
   return Array.from(set);
 }
 
-const CAP = { q: MAX_QUERIES_PER_CATEGORY }; // 합성 조기 종료 상한
+const CAP = { q: MAX_QUERIES_PER_CATEGORY };
 
 function composeQueriesForCategory(cat) {
   console.time("compose");

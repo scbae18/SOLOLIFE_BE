@@ -5,15 +5,11 @@ import crypto from "crypto";
 import { PrismaClient } from "@prisma/client";
 
 /**
- * 소품샵(영통권) 크롤러 확장판 — keyword 비활성화(항상 빈 배열 [])
- * - 카테고리: "소품샵" (동의어/세부 포함)
- * - 키워드 자동 태깅: 사용 안 함 (항상 [])
- * - 지역 바리에이션: 동/역/랜드마크/인접구 + 관용표현(근처/역세권/로데오 등)
- * - 수식어 풀 확대 + 2/3콤보 + 해시태그 확장
- * - 템플릿 확장(선물/포장/랩핑/핸드메이드/문구/스티커/굿즈 등)
- * - Naver Local 페이지네이션 + 블로그/웹 스니펫 캐시
- * - Google TextSearch/Details → 좌표/영업시간/types
- * - 합성 단계 조기 종료(early break) + 진행 로그 + 워밍업 핑
+ * 소품샵(영통권) 크롤러 확장판
+ * - 키워드 비활성화: 항상 []
+ * - Google: TextSearch로 place_id/lat/lng만 사용 (Details 호출/저장 전면 제거)
+ * - description / opening_hours / types / price_level 저장/갱신하지 않음
+ * - 무드 태그(moods)만 추출/병합
  */
 
 const prisma = new PrismaClient();
@@ -27,7 +23,6 @@ const REGION_ALIASES = [
 ];
 const SUBAREAS = [
   "영통동", "망포동", "매탄동", "원천동",
-  // 인접 동(교차검색)
   "이의동", "하동", "상현동", "우만동", "권선동", "매교동",
 ];
 const STATIONS = [
@@ -43,7 +38,7 @@ const ADJACENT_DISTRICTS = [
   "수원시 장안구", "수원시 팔달구", "수원시 권선구", "용인시 수지구", "용인시 기흥구",
 ];
 
-// 카테고리: 소품샵 (동의어/세부)
+// 카테고리
 const CATEGORY_KEYWORDS = ["소품샵"];
 const CATEGORY_SYNONYMS = {
   소품샵: [
@@ -56,7 +51,7 @@ const CATEGORY_SYNONYMS = {
   ],
 };
 
-// 수식어 풀 (소품/문구/리빙 맥락)
+// 수식어 풀
 const INTENT_MODIFIERS = [
   "인기", "추천", "핫플", "로컬", "신상", "오픈", "리뉴얼", "재오픈",
   "이벤트", "프로모션", "선물", "기념일", "생일",
@@ -70,7 +65,7 @@ const SHOPPING_MODIFIERS = [
   "스티커", "마스킹테이프", "다이어리", "플래너", "엽서", "카드",
 ];
 
-// 템플릿 확장(소품 문맥)
+// 템플릿
 const QUERY_TEMPLATES = [
   "{region} {category}",
   "{region} {modifier} {category}",
@@ -96,27 +91,22 @@ const QUERY_TEMPLATES = [
   "{region} #{modifier} #{category}",
 ];
 
-// ===== 상한/콤보 제어 =====
+// ===== 상한/콤보 =====
 const DISPLAY = 30;
 const MAX_PAGES_PER_QUERY = 4;
 const MAX_QUERIES_PER_CATEGORY = 180;
 const MAX_ITEMS_PER_CATEGORY   = 400;
 const BASE_DELAY_MS = 140;
 
-// 콤보 옵션
 const USE_COMBO_2 = true;
 const USE_COMBO_3 = true;
 const MAX_3_COMBOS = 400;
-
-// opening_hours가 없으면 features.openingHours 폴백 사용 여부
-const USE_FEATURES_FALLBACK = false;
 
 // =================== API URL/ENV ===================
 const NAVER_LOCAL_URL       = "https://openapi.naver.com/v1/search/local.json";
 const NAVER_BLOG_URL        = "https://openapi.naver.com/v1/search/blog.json";
 const NAVER_WEB_URL         = "https://openapi.naver.com/v1/search/webkr.json";
 const GOOGLE_PLACES_TEXT    = "https://maps.googleapis.com/maps/api/place/textsearch/json";
-const GOOGLE_PLACES_DETAILS = "https://maps.googleapis.com/maps/api/place/details/json";
 
 const {
   NAVER_OPENAPI_CLIENT_ID,
@@ -128,7 +118,7 @@ if (!NAVER_OPENAPI_CLIENT_ID || !NAVER_OPENAPI_CLIENT_SECRET) {
   throw new Error("NAVER_OPENAPI_CLIENT_ID / NAVER_OPENAPI_CLIENT_SECRET 누락");
 }
 if (!GOOGLE_MAPS_API_KEY) {
-  console.warn("[env] GOOGLE_MAPS_API_KEY 누락 (좌표/영업시간/types 채우려면 필요)");
+  console.warn("[env] GOOGLE_MAPS_API_KEY 누락 (좌표 채우려면 필요)");
 }
 
 const localHeaders = {
@@ -199,14 +189,11 @@ function kCombinations(arr, k) {
 }
 
 // =================== 허용 리스트 & 룰 ===================
-// * 매장 분위기 태그(선택적 사용; UI/검색에 유용)
-// * 매장 분위기 태그 (고정 6종)
+// 무드 태그(6종)
 const ALLOWED_MOOD_FEATURES = [
   "사람많은", "한적한", "밝은", "어두운", "넓은", "아늑한",
 ];
 
-
-// 분위기 규칙
 const MOOD_RULES = {
   사람많은: [/사람\s*많/, /붐비/, /북적/, /바글/, /혼잡/, /줄\s*길/, /웨이팅/],
   한적한:   [/한적/, /한산/, /널널/, /조용조용/, /사람\s*없/, /여유로/],
@@ -215,7 +202,6 @@ const MOOD_RULES = {
   넓은:     [/넓/, /좌석\s*많/, /자리\s*여유/, /공간\s*넉넉/, /층고\s*높/],
   아늑한:   [/아늑/, /포근/, /따뜻한\s*분위기/, /코지/],
 };
-
 
 const matchAny = (rules, text) => rules.some((r) => r.test(text));
 function inferMoodTags(textRaw) {
@@ -281,6 +267,8 @@ async function fetchWebSnippets(query, display=20) {
   SNIPPET_CACHE.set(key, merged);
   return merged;
 }
+
+// Google: TextSearch → place_id, lat, lng (ONLY)
 async function searchPlaceByText(name, address) {
   if (!GOOGLE_MAPS_API_KEY) return null;
   const qPrimary = address ? `${name} ${address}` : `${name} ${REGION_CANON}`;
@@ -296,28 +284,12 @@ async function searchPlaceByText(name, address) {
   if (!found) found = await tryQuery(qFallback);
   return found;
 }
-async function fetchPlaceDetails(placeId) {
-  if (!placeId || !GOOGLE_MAPS_API_KEY) return null;
-  const { data } = await withRetry(() =>
-    axios.get(GOOGLE_PLACES_DETAILS, {
-      params: { place_id: placeId, key: GOOGLE_MAPS_API_KEY, fields: "opening_hours,types,price_level", language: "ko" },
-      timeout: 8000,
-    })
-  );
-  const r = data?.result || {};
-  const oh = r.opening_hours || null;
-  return {
-    opening_hours: oh ? { open_now: oh.open_now ?? null, weekday_text: oh.weekday_text ?? null, periods: oh.periods ?? null } : null,
-    types: Array.isArray(r.types) ? r.types : [],
-    price_level: typeof r.price_level === "number" ? r.price_level : null,
-  };
-}
 
 // =================== 업서트 ===================
 async function upsertLocation(item, catLabel) {
   const name = stripHtml(item.title);
   const address = item.roadAddress || item.address || null;
-  const desc = stripHtml(item.description || "");
+  const desc = stripHtml(item.description || ""); // 추론용 텍스트로만 사용 (DB 저장 X)
   const dedupe_signature = makeDedupeSig({ name, address });
 
   const existing = await prisma.location.findUnique({ where: { dedupe_signature } });
@@ -332,7 +304,7 @@ async function upsertLocation(item, catLabel) {
   }
   const baseTextRaw = `${name} ${desc} ${extraText||""} ${catLabel||""}`;
 
-  // Google 좌표 + details
+  // Google 좌표만
   let coords = { place_id: null, lat: null, lng: null };
   try {
     const found = await searchPlaceByText(name, address);
@@ -340,52 +312,30 @@ async function upsertLocation(item, catLabel) {
     console.log(`[google:text] ${name} → pid=${coords.place_id || "none"}, lat=${coords.lat}, lng=${coords.lng}`);
   } catch (e) { console.warn("[google:text] error", e?.message || e); }
 
-  let opening_hours = null;
-  let place_types = [];
-  try {
-    if (coords.place_id) {
-      const details = await fetchPlaceDetails(coords.place_id);
-      opening_hours = details?.opening_hours || null;
-      place_types = details?.types || [];
-    }
-    console.log(`[google:details] ${name} → hours=${opening_hours ? "ok" : "none"}, types=${place_types.join(",") || "none"}`);
-  } catch (e) { console.warn("[google:details] error", e?.message || e); }
-
-  // ====== 추론 ======
+  // ====== 무드 추론/병합 ======
   const moodTags = inferMoodTags(baseTextRaw);
-
-  // 키워드 비활성화: 항상 빈 배열 유지
-  const mergedKeywords = [];
-
-  // 무드 병합
-const prevFeaturesFlat = Array.isArray(existing?.features_flat) ? existing.features_flat : [];
-const mergedMoodFlat = Array.from(new Set([
-  ...prevFeaturesFlat,
-  ...moodTags
-])).filter(f => ALLOWED_MOOD_FEATURES.includes(f));
-
+  const prevFeaturesFlat = Array.isArray(existing?.features_flat) ? existing.features_flat : [];
+  const mergedMoodFlat = Array.from(new Set([...prevFeaturesFlat, ...moodTags]))
+    .filter(f => ALLOWED_MOOD_FEATURES.includes(f));
 
   // features JSON
   const featuresJson = {
     moods: mergedMoodFlat,
     _debugSnippet: baseTextRaw.slice(0, 200),
   };
-  const featuresFinal = USE_FEATURES_FALLBACK && opening_hours
-    ? { ...featuresJson, openingHours: opening_hours }
-    : featuresJson;
 
-  // 업서트
+  // 업서트 (description/영업시간/타입 제외, 키워드 항상 [])
   const updatePayload = {
     location_name: name,
     address,
     latitude:  (coords.lat ?? existing?.latitude ?? null),
     longitude: (coords.lng ?? existing?.longitude ?? null),
     category: "소품샵",
-    description: desc || null,
-    keywords: { set: [] }, // 항상 빈 배열
-    features: featuresFinal,
+    // description: 제외 (기존 값 유지)
+    keywords: { set: [] },
+    features: featuresJson,
     features_flat: { set: mergedMoodFlat },
-    opening_hours: USE_FEATURES_FALLBACK ? undefined : opening_hours,
+    ...(coords.place_id ? { google_place_id: coords.place_id } : {}),
     updated_at: new Date(),
   };
   const createPayload = {
@@ -395,11 +345,11 @@ const mergedMoodFlat = Array.from(new Set([
     longitude: coords.lng,
     category: "소품샵",
     is_solo_friendly: true,
-    description: desc || null,
-    keywords: [],                  // 생성도 빈 배열
-    features: featuresFinal,
+    // description: 제외
+    keywords: [],
+    features: featuresJson,
     features_flat: mergedMoodFlat,
-    opening_hours: USE_FEATURES_FALLBACK ? undefined : opening_hours,
+    ...(coords.place_id ? { google_place_id: coords.place_id } : {}),
     dedupe_signature,
     created_at: new Date(),
     updated_at: new Date(),
@@ -415,8 +365,7 @@ const mergedMoodFlat = Array.from(new Set([
     `[upsert] ${name} (${address || "no-addr"}) → id=${loc.location_id}` +
     ` | lat=${loc.latitude ?? "null"}, lng=${loc.longitude ?? "null"}` +
     ` | moods=[${mergedMoodFlat.join(", ")}]` +
-    ` | keywords=[]` +
-    (opening_hours ? " | hours✅" : " | hours✖")
+    ` | keywords=[]`
   );
   return loc;
 }
@@ -508,7 +457,7 @@ function composeCategoryVariants(cat) {
   return Array.from(set);
 }
 
-const CAP = { q: MAX_QUERIES_PER_CATEGORY }; // 합성 조기 종료 상한
+const CAP = { q: MAX_QUERIES_PER_CATEGORY };
 
 function composeQueriesForCategory(cat) {
   console.time("compose");
@@ -609,7 +558,7 @@ async function runCategory(cat) {
 // =================== main ===================
 (async () => {
   try {
-    // 워밍업 핑: 키/네트워크 즉시 확인
+    // 워밍업 핑
     console.log("[warmup] naver local ping...");
     try {
       const ping = await axios.get(NAVER_LOCAL_URL, {

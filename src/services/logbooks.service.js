@@ -26,21 +26,32 @@ export async function listPublic(q) {
 }
 
 export async function createEntry(user_id, data) {
-  // places 정보를 분리하고 나머지 데이터로 여정기록을 생성
   const { places, ...logbookData } = data;
 
+  // places → Int[] (숫자만, 중복 제거)
+  const locationIds = Array.from(
+    new Set(
+      (Array.isArray(places) ? places : [])
+        .map(p => Number(p?.locationId))
+        .filter(Number.isInteger)
+    )
+  );
+
   const newLogbook = await prisma.logbookEntry.create({
-    data: { ...logbookData, user_id },
+    data: {
+      ...logbookData,
+      user_id,
+      ...(locationIds.length ? { location_ids: { set: locationIds } } : {})
+    },
   });
 
-  // 리뷰 생성을 백그라운드에서 실행시킴. (await 없음)
-  if (places && places.length > 0 && newLogbook.entry_content) {
+  // 본문이 있고 places가 있으면 리뷰 자동 생성(비동기)
+  if (Array.isArray(places) && places.length && newLogbook.entry_content) {
     createReviewsFromLogbook(newLogbook, places);
   }
-
-  // 사용자에게는 생성된 로그북 정보를 즉시 반환.
   return newLogbook;
 }
+
 
 export async function getEntry(logbook_id) {
   const e = await prisma.logbookEntry.findUnique({
