@@ -154,4 +154,47 @@ router.post('/locations/replace-one', recCtrl.suggestReplacementByCategoryOne);
  */
 router.post('/route/preview', recCtrl.previewRoute);
 
+// 기존 import/생성 유지
+// router 정의 아래에 추가
+
+/**
+ * @swagger
+ * /recommendations/random:
+ *   post:
+ *     tags: [Recommendations]
+ *     summary: "반경 내 서로 다른 카테고리 3곳 랜덤 추천"
+ *     description: |
+ *       center 기준 반경 radius_km(기본 3km) 이내에서 카테고리가 서로 다른 장소를 최대 3개 랜덤으로 추천합니다.
+ *       - exclude_location_ids / exclude_categories 로 제외 가능
+ *       - 반경 내 서로 다른 카테고리가 3개 미만이면 가능한 개수만 반환합니다.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               center:
+ *                 type: object
+ *                 properties:
+ *                   lat: { type: number, example: 37.2421 }
+ *                   lng: { type: number, example: 127.0719 }
+ *               radius_km:
+ *                 type: number
+ *                 example: 3
+ *               exclude_location_ids:
+ *                 type: array
+ *                 items: { type: integer }
+ *                 example: [101, 202]
+ *               exclude_categories:
+ *                 type: array
+ *                 items: { type: string }
+ *                 example: ["카페","전시"]
+ *     responses:
+ *       200:
+ *         description: "서로 다른 카테고리 최대 3개"
+ */
+router.post('/random', recCtrl.recommendThreeDistinctCategories);
+
+
 export default router;

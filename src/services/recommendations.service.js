@@ -524,3 +524,105 @@ export async function previewRoute({ selected = [], append = [], startId }) {
   // 기존 구현 그대로 사용
   return { selected, append, startId, meta: { note: 'previewRoute는 기존 구현 유지' } };
 }
+
+// 파일 내 기존 import/유틸 재사용 (haversineKm, buildGeoBox, filterWithinRadius, scoreOf, attachPhotosToItems 등 있음)
+
+export async function recommendThreeDistinctCategoriesWithinRadius({
+  center,
+  radius_km = 3,
+  excludeLocationIds = [],
+  excludeCategories = [],
+  takePool = 400     // 풀 사이즈
+}) {
+  const cLat = Number(center?.lat);
+  const cLng = Number(center?.lng);
+  const hasCenter = Number.isFinite(cLat) && Number.isFinite(cLng);
+  const radKm = Number.isFinite(Number(radius_km)) ? Number(radius_km) : 3;
+
+  const box = hasCenter ? buildGeoBox({ lat: cLat, lng: cLng }, radKm) : null;
+
+  const where = {
+    ...(excludeLocationIds?.length ? { location_id: { notIn: excludeLocationIds } } : {}),
+    ...(excludeCategories?.length ? { category: { notIn: excludeCategories } } : {}),
+    ...(box ? {
+      AND: [
+        { latitude:  { gte: box.minLat, lte: box.maxLat } },
+        { longitude: { gte: box.minLng, lte: box.maxLng } }
+      ]
+    } : {})
+  };
+
+  // 1) 후보 풀 조회
+  const rawPool = await prisma.location.findMany({
+    where,
+    select: {
+      location_id: true, location_name: true, address: true,
+      latitude: true, longitude: true, category: true,
+      is_solo_friendly: true, description: true,
+      rating_avg: true, rating_count: true, price_level: true,
+      keywords: true, features: true, features_flat: true,
+      opening_hours: true, created_at: true, updated_at: true
+    },
+    take: takePool,
+    orderBy: [{ rating_avg: 'desc' }, { rating_count: 'desc' }, { updated_at: 'desc' }]
+  });
+
+  const pool = filterWithinRadius(rawPool, hasCenter ? { lat: cLat, lng: cLng } : undefined, radKm);
+
+  if (!pool.length) {
+    return {
+      items: [],
+      meta: {
+        reason: hasCenter ? `반경 ${radKm}km 내 후보가 없습니다.` : 'center가 없거나 조건에 맞는 후보가 없습니다.',
+        within_radius_km: hasCenter ? radKm : null
+      }
+    };
+  }
+
+  // 2) 카테고리별로 그룹핑 후 카테고리 3개 뽑기
+  const byCat = new Map();
+  for (const it of pool) {
+    const k = it.category ?? '기타';
+    const arr = byCat.get(k) ?? [];
+    arr.push(it);
+    byCat.set(k, arr);
+  }
+
+  // 카테고리 셔플 (간단 무작위)
+  const cats = Array.from(byCat.keys());
+  for (let i = cats.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [cats[i], cats[j]] = [cats[j], cats[i]];
+  }
+
+  const picked = [];
+  for (const cat of cats) {
+    if (picked.length >= 3) break;
+    const arr = byCat.get(cat) ?? [];
+    if (!arr.length) continue;
+    // 평점/리뷰/신선도 가중 랜덤
+    const weights = arr.map(a => Math.max(0.1, scoreOf(a)));
+    // 가끔 완전 랜덤 느낌을 주려면 가중치에 소량의 노이즈를 섞을 수도 있음
+    const sum = weights.reduce((a,b)=>a+b,0) || 1;
+    let r = Math.random() * sum;
+    let chosen = arr[0];
+    for (let i=0;i<arr.length;i++) {
+      r -= weights[i];
+      if (r <= 0) { chosen = arr[i]; break; }
+    }
+    picked.push(chosen);
+  }
+
+  // 3) 부족하면 그대로 반환(요구사항: 서로 다른 카테고리이므로 중복 채우기 안 함)
+  const itemsWithPhotos = await attachPhotosToItems(picked);
+
+  return {
+    items: itemsWithPhotos,
+    meta: {
+      distinct_categories: itemsWithPhotos.map(x => x.category ?? '기타'),
+      distinct_count: itemsWithPhotos.length,
+      within_radius_km: hasCenter ? radKm : null,
+      note: itemsWithPhotos.length < 3 ? '반경 내 서로 다른 카테고리가 3개 미만' : undefined
+    }
+  };
+}

@@ -103,3 +103,19 @@ export async function previewRoute(req, res, next) {
     next(err);
   }
 }
+
+// 파일 상단 유틸(toArray, safeCenter, rad) 재사용
+
+export async function recommendThreeDistinctCategories(req, res, next) {
+  try {
+    const result = await recService.recommendThreeDistinctCategoriesWithinRadius({
+      center: safeCenter(req.body?.center),
+      radius_km: rad(req.body?.radius_km, 3),
+      excludeLocationIds: (req.body?.exclude_location_ids ?? []).map(Number).filter(Number.isFinite),
+      excludeCategories: toArray(req.body?.exclude_categories),
+    });
+    return res.status(200).json(result);
+  } catch (err) {
+    if (!mapPrismaError(err, res)) next(err);
+  }
+}
