@@ -24,6 +24,7 @@ import adminQuestsRouter from './routes/admin.quests.routes.js';
 import adminCharactersRouter from './routes/admin.characters.routes.js';
 import assetRoutes from './routes/assets.routes.js';
 import likeFoldersRoutes from "./routes/likeFolders.routes.js";
+import weatherRoutes from './routes/weather.routes.js';
 
 const app = express();
 app.use(cors());
@@ -51,6 +52,7 @@ app.use(adminQuestsRouter);
 app.use(adminCharactersRouter);
 app.use('/assets', assetRoutes);
 app.use("/folders", likeFoldersRoutes);
+app.use('/', weatherRoutes);
 
 
 initSwagger(app);
