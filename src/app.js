@@ -26,6 +26,7 @@ import assetRoutes from './routes/assets.routes.js';
 import likeFoldersRoutes from "./routes/likeFolders.routes.js";
 import weatherRoutes from './routes/weather.routes.js';
 import uploadsRoutes from './routes/upload.routes.js';
+import todayRoutes from './routes/today.routes.js';
 
 const app = express();
 app.use(cors());
@@ -41,6 +42,7 @@ app.use('/locations', locationsRoutes);
 app.use('/journeys', journeysRoutes);
 app.use('/logbooks', logbooksRoutes);
 app.use('/recommendations', recommendationsRoutes);
+app.use('/today', todayRoutes);
 app.use(onboardingRoutes);
 app.use('/geo',geocodeRoutes);
 app.use('/reviews', reviewsRoutes);
