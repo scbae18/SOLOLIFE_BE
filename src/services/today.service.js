@@ -3,14 +3,13 @@ import { prisma } from '../lib/prisma.js';
 import { getBriefWeatherByLatLng } from './weather.service.js';
 import OpenAI from 'openai';
 
-export async function getTodayRecommendation() {
+export async function getTodayRecommendation(lat, lng) {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
   try {
     // --- 1. 실시간 컨텍스트 파악 ---
-    const suwonCityHallLat = 37.2636;
-    const suwonCityHallLng = 127.0286;
-    const weather = await getBriefWeatherByLatLng(suwonCityHallLat, suwonCityHallLng);
+    
+    const weather = await getBriefWeatherByLatLng(lat, lng);
     const weatherLabel = weather.brief.label;
     
     const now = new Date();
@@ -62,10 +61,10 @@ export async function getTodayRecommendation() {
     가장 중요한 것은, 상황과 장소의 특징 사이의 **감성적인 연결고리**를 찾아서 문장에 자연스럽게 녹여내는 것이야.
 
     [좋은 예시]
-    - 상황: 비 오는 날 저녁
-    - 장소: 족발집
-    - 결과: "창밖에 비 내리는 소리를 들으며, 쫀득한 족발로 고소한 위로를 받아보는 건 어떠세요?" 
-      (단순히 '비'와 '족발'을 합친 게 아니라, '비'가 주는 감성적인 분위기와 '족발'이 주는 '위로'라는 감정을 연결함)
+    - 상황: 구름 낀 흐린 오후
+    - 장소: 카페
+    - 결과: "생각이 많아지는 흐린 날, 아늑한 카페에서 따뜻한 차로 복잡한 마음을 내려놓는 시간을 가져보세요"
+      (단순히 '흐림/구름'과 '카페'를 합친 게 아니라, '구름낀 흐린 날씨'가 주는 감성적인 분위기와 '카페와 차'가 주는 '따뜻함과 차분함'이라는 감정을 연결함)
 
     ---
     이제 아래 정보로 만들어줘.
