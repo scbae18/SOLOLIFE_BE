@@ -9,23 +9,42 @@ const router = Router();
  * @swagger
  * tags:
  *   name: Today
- *   description: 오늘의 테마 추천 API
+ *   description: "실시간 요일/시간대/날씨를 반영한 오늘의 테마 추천"
  */
 
 /**
  * @swagger
  * /today:
  *   get:
- *     summary: 오늘의 추천 문구 및 장소
- *     description: 
- *       실시간 시간대, 요일, 날씨 정보를 기반으로 AI가 감성적인 한 문장과 함께 추천 장소를 제공합니다.
- *       <br>요청 시 로그인 토큰이 필요합니다.
+ *     summary: "오늘의 추천 문구 및 장소"
+ *     description: |
+ *       실시간 **요일/시간대/날씨**(요청 좌표 기준)를 반영해 AI가 감성 한 문장(`theme_phrase`)과
+ *       추천 장소 1개(`location`)를 반환합니다.
+ *       - 날씨는 `lat`, `lng`를 기준으로 조회됩니다.
+ *       - 장소는 DB에서 무작위로 1곳을 선택합니다.
  *     tags: [Today]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: lat
+ *         required: true
+ *         schema:
+ *           type: number
+ *           format: double
+ *         description: "위도 (예: 37.2636)"
+ *         example: 37.2636
+ *       - in: query
+ *         name: lng
+ *         required: true
+ *         schema:
+ *           type: number
+ *           format: double
+ *         description: "경도 (예: 127.0286)"
+ *         example: 127.0286
  *     responses:
  *       200:
- *         description: 오늘의 추천 결과 반환
+ *         description: "성공적으로 오늘의 추천을 반환합니다."
  *         content:
  *           application/json:
  *             schema:
@@ -33,11 +52,12 @@ const router = Router();
  *               properties:
  *                 theme_phrase:
  *                   type: string
- *                   example: "햇살이 따뜻한 오후, ${장소명}에서 여유를 즐겨보는 건 어떠세요?"
- *                   description: AI가 생성한 감성적인 추천 문구
+ *                   description: "AI가 생성한 감성 카피 한 문장"
+ *                   example: "구름 낀 저녁, 가까운 카페에서 따뜻한 한 잔 어떠세요?"
  *                 location:
  *                   type: object
  *                   nullable: true
+ *                   description: "추천된 장소(무작위 1곳). 내부 에러 시 null."
  *                   properties:
  *                     location_id:
  *                       type: integer
@@ -58,11 +78,14 @@ const router = Router();
  *                       example: ["조용한", "디저트맛집"]
  *                     thumbnail_url:
  *                       type: string
+ *                       nullable: true
  *                       example: "https://example.com/cafe.jpg"
+ *       400:
+ *         description: "잘못된 요청 (lat/lng 누락 또는 형식 오류)"
  *       401:
- *         description: 인증 필요 (토큰 누락 또는 만료)
+ *         description: "인증 필요 (토큰 누락/만료)"
  *       500:
- *         description: 서버 오류
+ *         description: "서버 내부 오류"
  */
 
 router.get('/', authRequired, getTodayRecommendation);
