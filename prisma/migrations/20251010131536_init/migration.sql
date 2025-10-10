@@ -1,3 +1,6 @@
+-- CreateEnum
+CREATE TYPE "public"."AssetType" AS ENUM ('TYPE1', 'TYPE2', 'TYPE3');
+
 -- CreateTable
 CREATE TABLE "public"."User" (
     "user_id" SERIAL NOT NULL,
@@ -7,12 +10,14 @@ CREATE TABLE "public"."User" (
     "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "is_public_profile" BOOLEAN NOT NULL DEFAULT true,
     "current_character_id" INTEGER,
+    "current_assets" JSONB DEFAULT '{"TYPE1":1,"TYPE2":2,"TYPE3":3}',
     "onboarding_answers" JSONB,
     "assets" INTEGER[] DEFAULT ARRAY[]::INTEGER[],
     "points" INTEGER NOT NULL DEFAULT 0,
-    "title" TEXT NOT NULL DEFAULT '초심자',
+    "title" TEXT NOT NULL DEFAULT '🌱 초보 탐험가 (Lv.1)',
     "total_points_earned" INTEGER NOT NULL DEFAULT 0,
     "is_admin" BOOLEAN NOT NULL DEFAULT false,
+    "tmp_probe" INTEGER DEFAULT 0,
 
     CONSTRAINT "User_pkey" PRIMARY KEY ("user_id")
 );
@@ -37,9 +42,10 @@ CREATE TABLE "public"."UserCharacter" (
 
 -- CreateTable
 CREATE TABLE "public"."Asset" (
-    "asset_id" INTEGER NOT NULL,
+    "asset_id" SERIAL NOT NULL,
     "name" TEXT NOT NULL,
     "image_url" TEXT,
+    "type" "public"."AssetType" NOT NULL,
 
     CONSTRAINT "Asset_pkey" PRIMARY KEY ("asset_id")
 );
@@ -66,7 +72,7 @@ CREATE TABLE "public"."Location" (
     "category" TEXT,
     "is_solo_friendly" BOOLEAN NOT NULL DEFAULT true,
     "description" TEXT,
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "dedupe_signature" TEXT,
     "features" JSONB,
     "keywords" TEXT[],
@@ -96,6 +102,27 @@ CREATE TABLE "public"."LocationLike" (
 );
 
 -- CreateTable
+CREATE TABLE "public"."LikeFolder" (
+    "folder_id" SERIAL NOT NULL,
+    "user_id" INTEGER NOT NULL,
+    "name" VARCHAR(100) NOT NULL,
+    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(3) NOT NULL,
+
+    CONSTRAINT "LikeFolder_pkey" PRIMARY KEY ("folder_id")
+);
+
+-- CreateTable
+CREATE TABLE "public"."LikeItem" (
+    "like_item_id" SERIAL NOT NULL,
+    "folder_id" INTEGER NOT NULL,
+    "location_id" INTEGER NOT NULL,
+    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "LikeItem_pkey" PRIMARY KEY ("like_item_id")
+);
+
+-- CreateTable
 CREATE TABLE "public"."LocationPhoto" (
     "id" SERIAL NOT NULL,
     "location_id" INTEGER NOT NULL,
@@ -105,7 +132,7 @@ CREATE TABLE "public"."LocationPhoto" (
     "photo_reference" TEXT NOT NULL,
     "attributions" TEXT[],
     "remote_url" TEXT,
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "LocationPhoto_pkey" PRIMARY KEY ("id")
@@ -138,7 +165,7 @@ CREATE TABLE "public"."LogbookEntry" (
     "logbook_id" SERIAL NOT NULL,
     "user_id" INTEGER NOT NULL,
     "journey_id" INTEGER,
-    "location_id" INTEGER,
+    "location_ids" INTEGER[] DEFAULT ARRAY[]::INTEGER[],
     "entry_title" TEXT NOT NULL,
     "entry_content" TEXT,
     "is_public" BOOLEAN NOT NULL DEFAULT true,
@@ -176,7 +203,7 @@ CREATE TABLE "public"."Review" (
     "logbook_id" INTEGER NOT NULL,
     "rating" INTEGER NOT NULL,
     "content" JSONB NOT NULL,
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "Review_pkey" PRIMARY KEY ("review_id")
@@ -213,16 +240,55 @@ CREATE INDEX "LocationLike_location_id_idx" ON "public"."LocationLike"("location
 CREATE UNIQUE INDEX "LocationLike_user_id_location_id_key" ON "public"."LocationLike"("user_id", "location_id");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "LikeFolder_user_id_name_key" ON "public"."LikeFolder"("user_id", "name");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "LikeItem_folder_id_location_id_key" ON "public"."LikeItem"("folder_id", "location_id");
+
+-- CreateIndex
 CREATE INDEX "LocationPhoto_location_id_idx" ON "public"."LocationPhoto"("location_id");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "LocationPhoto_location_id_position_key" ON "public"."LocationPhoto"("location_id", "position");
 
 -- CreateIndex
+CREATE INDEX "JourneyLocation_journey_id_idx" ON "public"."JourneyLocation"("journey_id");
+
+-- CreateIndex
+CREATE INDEX "JourneyLocation_location_id_idx" ON "public"."JourneyLocation"("location_id");
+
+-- CreateIndex
+CREATE INDEX "LogbookEntry_user_id_idx" ON "public"."LogbookEntry"("user_id");
+
+-- CreateIndex
+CREATE INDEX "LogbookEntry_journey_id_idx" ON "public"."LogbookEntry"("journey_id");
+
+-- CreateIndex
+CREATE INDEX "Like_logbook_id_idx" ON "public"."Like"("logbook_id");
+
+-- CreateIndex
+CREATE INDEX "Like_user_id_idx" ON "public"."Like"("user_id");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Like_logbook_id_user_id_key" ON "public"."Like"("logbook_id", "user_id");
 
 -- CreateIndex
+CREATE INDEX "Scrap_logbook_id_idx" ON "public"."Scrap"("logbook_id");
+
+-- CreateIndex
+CREATE INDEX "Scrap_user_id_idx" ON "public"."Scrap"("user_id");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Scrap_logbook_id_user_id_key" ON "public"."Scrap"("logbook_id", "user_id");
+
+-- CreateIndex
+CREATE INDEX "Review_user_id_idx" ON "public"."Review"("user_id");
+
+-- CreateIndex
+CREATE INDEX "Review_location_id_idx" ON "public"."Review"("location_id");
+
+-- CreateIndex
+CREATE INDEX "Review_logbook_id_idx" ON "public"."Review"("logbook_id");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Review_logbook_id_location_id_key" ON "public"."Review"("logbook_id", "location_id");
@@ -246,6 +312,15 @@ ALTER TABLE "public"."LocationLike" ADD CONSTRAINT "LocationLike_location_id_fke
 ALTER TABLE "public"."LocationLike" ADD CONSTRAINT "LocationLike_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."User"("user_id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "public"."LikeFolder" ADD CONSTRAINT "LikeFolder_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."User"("user_id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."LikeItem" ADD CONSTRAINT "LikeItem_folder_id_fkey" FOREIGN KEY ("folder_id") REFERENCES "public"."LikeFolder"("folder_id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."LikeItem" ADD CONSTRAINT "LikeItem_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."Location"("location_id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "public"."LocationPhoto" ADD CONSTRAINT "LocationPhoto_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."Location"("location_id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
@@ -259,9 +334,6 @@ ALTER TABLE "public"."JourneyLocation" ADD CONSTRAINT "JourneyLocation_location_
 
 -- AddForeignKey
 ALTER TABLE "public"."LogbookEntry" ADD CONSTRAINT "LogbookEntry_journey_id_fkey" FOREIGN KEY ("journey_id") REFERENCES "public"."Journey"("journey_id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "public"."LogbookEntry" ADD CONSTRAINT "LogbookEntry_location_id_fkey" FOREIGN KEY ("location_id") REFERENCES "public"."Location"("location_id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "public"."LogbookEntry" ADD CONSTRAINT "LogbookEntry_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."User"("user_id") ON DELETE CASCADE ON UPDATE CASCADE;

@@ -19,7 +19,7 @@ model User {
   created_at           DateTime @default(now()) @db.Timestamptz(3)
   is_public_profile    Boolean  @default(true)
   current_character_id Int?
-  current_assets Json? @default("{\"TYPE1\":1,\"TYPE2\":2,\"TYPE3\":3}")
+  current_assets       Json?    @default("{\"TYPE1\":1,\"TYPE2\":2,\"TYPE3\":3}")
   onboarding_answers   Json?
   assets               Int[]    @default([])
   points               Int      @default(0)
@@ -42,6 +42,7 @@ model User {
 
   // owned/unlocked characters
   characters UserCharacter[]
+  tmp_probe Int? @default(0)
 }
 
 model Character {
@@ -76,7 +77,7 @@ enum AssetType {
 }
 
 model Asset {
-  asset_id  Int     @id @default(autoincrement())
+  asset_id  Int       @id @default(autoincrement())
   name      String
   image_url String?
   type      AssetType
