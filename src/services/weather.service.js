@@ -1,6 +1,39 @@
 // src/services/weather.service.js
 import axios from 'axios';
+import https from 'https';
+import dns from 'dns';
 import { ApiError } from '../lib/ApiError.js';
+
+// 1) Node가 IPv4 우선 사용 (Node 18+)
+try { dns.setDefaultResultOrder('ipv4first'); } catch { /* ignore */ }
+
+// 2) IPv4 고정 + Keep-Alive Agent
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  lookup: (hostname, opts, cb) => dns.lookup(hostname, { family: 4, all: false }, cb),
+});
+
+async function axiosWithRetry(config, { retries = 2, baseDelayMs = 700 } = {}) {
+  let lastErr;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await axios.request({
+        httpsAgent,
+        proxy: false,            // ✅ 프록시 완전 무시
+        timeout: 20000,          // ⬆ 20s
+        headers: { 'User-Agent': 'SOLOLIFE_BE/1.0' },
+        ...config,
+      });
+    } catch (e) {
+      lastErr = e;
+      const retriable = (!e.response && ['ETIMEDOUT','ECONNRESET','EAI_AGAIN','ENOTFOUND'].includes(e.code))
+                        || (e.response?.status >= 500);
+      if (!retriable || i === retries) break;
+      await new Promise(r => setTimeout(r, baseDelayMs * 2 ** i));
+    }
+  }
+  throw lastErr;
+}
 
 function mapWeatherCodeToBrief(wmo) {
   const SUNNY = { code: 'SUNNY', label: '화창' };
@@ -8,9 +41,9 @@ function mapWeatherCodeToBrief(wmo) {
   const RAIN = { code: 'RAIN', label: '비' };
   const SNOW = { code: 'SNOW', label: '눈' };
   if (wmo === 0) return SUNNY;
-  if ([1, 2, 3, 45, 48].includes(wmo)) return CLOUDY;
-  if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 97, 98, 99].includes(wmo)) return RAIN;
-  if ([71, 73, 75, 77, 85, 86].includes(wmo)) return SNOW;
+  if ([1,2,3,45,48].includes(wmo)) return CLOUDY;
+  if ([51,53,55,56,57,61,63,65,66,67,80,81,82,95,96,97,98,99].includes(wmo)) return RAIN;
+  if ([71,73,75,77,85,86].includes(wmo)) return SNOW;
   return CLOUDY;
 }
 
@@ -25,34 +58,33 @@ export async function getBriefWeatherByLatLng(lat, lng) {
   const params = {
     latitude,
     longitude,
-    // ✅ 언더스코어 표기
-    current: ['temperature_2m', 'weather_code', 'precipitation'].join(','),
-    hourly: ['cloud_cover', 'precipitation', 'rain', 'snowfall'].join(','),
-    timezone: 'auto'
+    // ✅ 최신 스펙: 언더스코어
+    current: 'temperature_2m,weather_code,precipitation',
+    hourly:  'cloud_cover,precipitation,rain,snowfall',
+    timezone: 'auto',
   };
 
   let data;
   try {
-    const res = await axios.get(url, { params, timeout: 12000, headers: { 'User-Agent': 'SOLOLIFE_BE/1.0' } });
+    const res = await axiosWithRetry({ method: 'GET', url, params });
     data = res.data;
   } catch (e) {
-    const status = e.response?.status ?? 502;
-    const body = e.response?.data;
-    // 🔎 꼭 남겨두세요: 원인 파악에 결정적
     console.error('[Open-Meteo] request failed', {
-      status,
+      status: e.response?.status ?? 0,
       code: e.code,
       message: e.message,
-      data: body
+      data: e.response?.data,
     });
-    if (status >= 400 && status < 500) {
-      const msg = (typeof body === 'string' ? body : body?.reason || body?.error) || '잘못된 요청';
+    const status = e.response?.status;
+    if (status && status >= 400 && status < 500) {
+      const msg = (typeof e.response.data === 'string'
+        ? e.response.data
+        : e.response.data?.reason || e.response.data?.error) || '잘못된 요청';
       throw new ApiError(status, `날씨 제공자 4xx 응답: ${msg}`);
     }
     throw new ApiError(502, '날씨 제공자 호출 실패(Open-Meteo). 잠시 후 다시 시도해주세요.');
   }
 
-  // ✅ 응답 키도 언더스코어
   const wmo = data?.current?.weather_code;
   if (wmo == null) {
     console.error('[Open-Meteo] missing weather_code', data?.current);
@@ -60,22 +92,21 @@ export async function getBriefWeatherByLatLng(lat, lng) {
   }
 
   const brief = mapWeatherCodeToBrief(Number(wmo));
-
   return {
     brief,
     current: {
       temperature_2m: data?.current?.temperature_2m ?? null,
       weather_code: wmo,
       precipitation: data?.current?.precipitation ?? null,
-      time: data?.current?.time ?? null
+      time: data?.current?.time ?? null,
     },
     hint: {
-      cloud_cover_now: pickHourlyNow(data?.hourly, 'cloud_cover', data?.current?.time),
-      rain_now: pickHourlyNow(data?.hourly, 'rain', data?.current?.time),
-      snowfall_now: pickHourlyNow(data?.hourly, 'snowfall', data?.current?.time),
-      precipitation_now: pickHourlyNow(data?.hourly, 'precipitation', data?.current?.time)
+      cloud_cover_now:    pickHourlyNow(data?.hourly, 'cloud_cover',    data?.current?.time),
+      rain_now:           pickHourlyNow(data?.hourly, 'rain',           data?.current?.time),
+      snowfall_now:       pickHourlyNow(data?.hourly, 'snowfall',       data?.current?.time),
+      precipitation_now:  pickHourlyNow(data?.hourly, 'precipitation',  data?.current?.time),
     },
-    provider: 'open-meteo'
+    provider: 'open-meteo',
   };
 }
 
