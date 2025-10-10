@@ -19,6 +19,7 @@ model User {
   created_at           DateTime @default(now()) @db.Timestamptz(3)
   is_public_profile    Boolean  @default(true)
   current_character_id Int?
+  current_assets Json? @default("{\"TYPE1\":1,\"TYPE2\":2,\"TYPE3\":3}")
   onboarding_answers   Json?
   assets               Int[]    @default([])
   points               Int      @default(0)
@@ -68,11 +69,17 @@ model UserCharacter {
   @@index([character_id])
 }
 
+enum AssetType {
+  TYPE1
+  TYPE2
+  TYPE3
+}
+
 model Asset {
   asset_id  Int     @id @default(autoincrement())
   name      String
   image_url String?
-  type      Int
+  type      AssetType
 }
 
 model Quest {

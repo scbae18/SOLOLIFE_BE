@@ -27,6 +27,7 @@ import likeFoldersRoutes from "./routes/likeFolders.routes.js";
 import weatherRoutes from './routes/weather.routes.js';
 import uploadsRoutes from './routes/upload.routes.js';
 import todayRoutes from './routes/today.routes.js';
+import appearanceRoute from './routes/appearance.routes.js';
 
 const app = express();
 app.use(cors());
@@ -57,6 +58,7 @@ app.use('/assets', assetRoutes);
 app.use("/folders", likeFoldersRoutes);
 app.use('/', weatherRoutes);
 app.use(uploadsRoutes)
+app.use(appearanceRoute);
 
 
 initSwagger(app);
