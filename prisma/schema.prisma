@@ -18,8 +18,12 @@ model User {
   password_hash        String
   created_at           DateTime @default(now()) @db.Timestamptz(3)
   is_public_profile    Boolean  @default(true)
-  current_character_id String?  @db.VarChar(50) // Int? → String?
-  current_assets       Json?    @default("{\"TYPE1\":1,\"TYPE2\":2,\"TYPE3\":3}")
+  current_character_id String?  @db.VarChar(50)
+
+  // 🎯 수정됨: 현재 장착 중인 에셋 구조 변경
+  // 예: {"bg1-only": "tent", "bg23": ["bee", "butterfly"]}
+  current_assets       Json?    @default("{\"bg1-only\": null, \"bg23\": []}")
+
   onboarding_answers   Json?
   assets               Int[]    @default([])
   points               Int      @default(0)
@@ -37,10 +41,10 @@ model User {
   scraps         Scrap[]
   likeFolders    LikeFolder[]
 
-  // current selected character (String PK 참조)
+  // 현재 선택된 캐릭터 (String PK 참조)
   currentCharacter Character? @relation(name: "CurrentUserCharacter", fields: [current_character_id], references: [id], onDelete: SetNull)
 
-  // owned/unlocked characters
+  // 보유 중인 캐릭터들
   characters UserCharacter[]
 
   tmp_probe Int? @default(0)
@@ -67,17 +71,11 @@ model UserCharacter {
   @@index([character_id])
 }
 
-enum AssetType {
-  TYPE1
-  TYPE2
-  TYPE3
-}
-
 model Asset {
-  asset_id  Int       @id @default(autoincrement())
-  name      String
-  image_url String?
-  type      AssetType
+  asset_id  Int      @id @default(autoincrement())
+  id        String   @unique @db.VarChar(50)  // 예: "tent"
+  label     String   @db.VarChar(100)         // 예: "텐트"
+  group     String   @db.VarChar(20)          // "bg1-only" 또는 "bg23"
 }
 
 model Quest {

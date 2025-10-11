@@ -18,36 +18,29 @@ const r = Router();
  *   schemas:
  *     AdminAssetCreate:
  *       type: object
- *       required: [name, type, image_url]
+ *       required: [id, group, label]
  *       properties:
- *         name:
+ *         id:
  *           type: string
- *           example: "야전 텐트"
- *         type:
+ *           example: "tent"
+ *           description: 에셋의 고유 문자열 ID
+ *         group:
  *           type: string
- *           enum: [TYPE1, TYPE2, TYPE3]
- *           example: TYPE1
- *         image_url:
+ *           enum: [bg1-only, bg23]
+ *           example: "bg23"
+ *           description: "에셋 그룹 (bg1-only: 단일, bg23: 최대 2개)"
+ *         label:
  *           type: string
- *           format: uri
- *           example: "https://cdn.example.com/tent.png"
+ *           example: "텐트"
+ *           description: 에셋 이름
+ *
  *     AdminAsset:
  *       type: object
  *       properties:
- *         asset_id:
- *           type: integer
- *           example: 201
- *         name:
- *           type: string
- *           example: "야전 텐트"
- *         type:
- *           type: string
- *           enum: [TYPE1, TYPE2, TYPE3]
- *           example: TYPE1
- *         image_url:
- *           type: string
- *           format: uri
- *           example: "https://cdn.example.com/tent.png"
+ *         asset_id: { type: integer, example: 1 }
+ *         id: { type: string, example: "tent" }
+ *         label: { type: string, example: "텐트" }
+ *         group: { type: string, enum: [bg1-only, bg23], example: "bg1-only" }
  */
 
 /**
@@ -55,52 +48,42 @@ const r = Router();
  * /admin/assets:
  *   post:
  *     tags: [Admin - Assets]
- *     summary: 에셋 생성(관리자)
- *     description: 메인 화면에서 사용할 에셋 메타(이름/타입/이미지URL) 등록.
+ *     summary: 에셋 생성 (관리자)
+ *     description: 에셋의 ID, 그룹, 이름을 등록합니다.
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
- *             oneOf:
- *               - $ref: '#/components/schemas/AdminAssetCreate'
- *               - type: object               # 하위호환: url로 들어오는 경우
- *                 required: [name, type, url]
- *                 properties:
- *                   name: { type: string, example: "야전 텐트" }
- *                   type: { type: string, enum: [TYPE1, TYPE2, TYPE3], example: TYPE1 }
- *                   url:  { type: string, format: uri, example: "https://cdn.example.com/tent.png" }
+ *             $ref: '#/components/schemas/AdminAssetCreate'
  *     responses:
  *       201:
- *         description: 생성된 에셋
+ *         description: 생성된 에셋 정보
  *         content:
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/AdminAsset'
- *       400: { description: 잘못된 요청 }
- *       401: { description: 인증 실패 }
- *       403: { description: 관리자 권한 없음 }
+ *       400: { description: Invalid request body }
+ *       401: { description: Unauthorized }
+ *       403: { description: Forbidden }
  */
 r.post('/admin/assets', authRequired, adminOnly, async (req, res, next) => {
   try {
-    const { name, image_url, type, url } = req.body ?? {};
+    const { id, group, label } = req.body ?? {};
 
-    // 하위호환: url로 들어오면 image_url로 매핑
-    const finalImageUrl = image_url ?? url;
+    if (!id) return res.status(400).json({ error: 'id required' });
+    if (!group) return res.status(400).json({ error: 'group required (bg1-only|bg23)' });
+    if (!label) return res.status(400).json({ error: 'label required' });
 
-    if (!name) return res.status(400).json({ error: 'name required' });
-    if (!finalImageUrl) return res.status(400).json({ error: 'image_url required' });
-    if (!type) return res.status(400).json({ error: 'type required (TYPE1|TYPE2|TYPE3)' });
-
-    const allowed = new Set(['TYPE1', 'TYPE2', 'TYPE3']);
-    if (!allowed.has(type)) {
-      return res.status(400).json({ error: 'invalid type; allowed: TYPE1|TYPE2|TYPE3' });
+    const allowed = new Set(['bg1-only', 'bg23']);
+    if (!allowed.has(group)) {
+      return res.status(400).json({ error: 'invalid group; allowed: bg1-only|bg23' });
     }
 
     const created = await prisma.asset.create({
-      data: { name, image_url: finalImageUrl, type }, // ✅ 스키마 필드에 맞게 저장
-      select: { asset_id: true, name: true, type: true, image_url: true },
+      data: { id, group, label },
+      select: { asset_id: true, id: true, group: true, label: true },
     });
 
     res.status(201).json(created);
