@@ -18,10 +18,20 @@ const r = Router();
  *   schemas:
  *     CurrentAssets:
  *       type: object
+ *       description: 에셋 그룹별 현재 장착 상태
  *       properties:
- *         TYPE1: { type: integer, nullable: true }
- *         TYPE2: { type: integer, nullable: true }
- *         TYPE3: { type: integer, nullable: true }
+ *         bg1-only:
+ *           type: string
+ *           nullable: true
+ *           example: "tent"
+ *           description: "단일 장착 가능한 에셋 (예: 텐트)"
+ *         bg23:
+ *           type: array
+ *           nullable: true
+ *           items:
+ *             type: string
+ *           example: ["tree", "tulip"]
+ *           description: 최대 2개까지 장착 가능한 에셋 그룹
  */
 
 /**
@@ -39,13 +49,17 @@ const r = Router();
  *             schema:
  *               type: object
  *               properties:
- *                 user_id: { type: integer }
- *                 current_character_id: { type: string, nullable: true }   # <- string으로 변경
+ *                 user_id:
+ *                   type: integer
+ *                 current_character_id:
+ *                   type: string
+ *                   nullable: true
+ *                   description: 현재 선택된 캐릭터 ID
  *                 current_assets:
  *                   $ref: '#/components/schemas/CurrentAssets'
  *   put:
- *     summary: 캐릭터 및 에셋 타입별 장착 변경
- *     description: character_id 또는 assets 일부/전체를 전달. null은 기본값(1,2,3) 복원.
+ *     summary: 캐릭터 및 에셋 장착 변경
+ *     description: character_id 또는 current_assets 일부/전체를 전달. null은 기본값 복원.
  *     tags: [Appearance]
  *     security: [ { bearerAuth: [] } ]
  *     requestBody:
@@ -55,13 +69,15 @@ const r = Router();
  *           schema:
  *             type: object
  *             properties:
- *               character_id: { type: string, nullable: true, example: "rookie_001" }  # <- string
- *               assets:
+ *               character_id:
+ *                 type: string
+ *                 nullable: true
+ *                 example: "base_f"
+ *               current_assets:
  *                 $ref: '#/components/schemas/CurrentAssets'
  *                 example:
- *                   TYPE1: 10
- *                   TYPE2: null
- *                   TYPE3: 15
+ *                   bg1-only: "bee"
+ *                   bg23: ["tree", "tulip"]
  *     responses:
  *       200:
  *         description: 변경된 장착 상태
