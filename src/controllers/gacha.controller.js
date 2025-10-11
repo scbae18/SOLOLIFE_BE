@@ -2,13 +2,14 @@
 import * as gachaService from '../services/gacha.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
-export const roll = asyncHandler(async (req, res) => {
+export const rollCharacter = asyncHandler(async (req, res) => {
   const userId = req.user?.user_id;
+  const result = await gachaService.rollCharacterGacha(userId);
+  return res.json(result);
+});
 
-  // cost 검증 (정수/양수 아님 → 서비스에서 기본값 사용)
-  const rawCost = req.body?.cost;
-  const result = await gachaService.rollGacha(userId, { cost: rawCost });
-
-  // 200 OK
+export const rollAsset = asyncHandler(async (req, res) => {
+  const userId = req.user?.user_id;
+  const result = await gachaService.rollAssetGacha(userId);
   return res.json(result);
 });
