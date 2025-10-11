@@ -1,3 +1,4 @@
+// src/routes/characters.routes.js
 import { Router } from 'express';
 import { authRequired } from '../lib/authMiddleware.js';
 import { list, unlock, mine } from '../controllers/characters.controller.js';
@@ -13,7 +14,16 @@ const r = Router();
  *     responses:
  *       200:
  *         description: OK
- *         content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Character' } } } }
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   id:     { type: string, example: "rookie_001" }
+ *                   theme:  { type: string, example: "forest" }
+ *                   gender: { type: string, example: "male" }
  */
 r.get('/', list);
 
@@ -41,10 +51,11 @@ r.get('/me', authRequired, mine);
  *       - in: path
  *         name: characterId
  *         required: true
- *         schema: { type: integer }
+ *         schema: { type: string }
+ *         description: 캐릭터의 문자열 ID (Character.id)
  *     responses:
  *       200: { description: OK }
- *       400: { description: Requires higher level or already unlocked }
+ *       400: { description: Already unlocked }
  *       401: { description: Unauthorized }
  *       404: { description: Not Found }
  */

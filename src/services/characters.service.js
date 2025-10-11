@@ -1,27 +1,29 @@
+// src/services/characters.service.js
 import { prisma } from '../lib/prisma.js';
 import { ApiError } from '../lib/ApiError.js';
 
 export function listCharacters() {
+  // Character: id(string), theme, gender
   return prisma.character.findMany({
-    orderBy: { character_id: 'asc' }
+    orderBy: { id: 'asc' },
   });
 }
 
 export async function unlockCharacter(user_id, character_id) {
-  const ch = await prisma.character.findUnique({ where: { character_id } });
+  // character_id now string; Character PK is `id`
+  const ch = await prisma.character.findUnique({ where: { id: character_id } });
   if (!ch) throw new ApiError(404, 'Character not found');
 
-  const user = await prisma.user.findUnique({ where: { user_id } });
-  if (user.explorer_level < ch.unlock_level) {
-    throw new ApiError(400, `Requires level ${ch.unlock_level}`);
-  }
-
+  // 레벨/해금 조건이 스키마에 없으므로 단순 해금 처리
   try {
     await prisma.userCharacter.create({
-      data: { user_id, character_id }
+      data: { user_id, character_id }, // user_id:int, character_id:string
     });
   } catch (e) {
-    if (e.code === 'P2002') return { ok: true, message: 'Already unlocked' };
+    // Unique constraint (already unlocked) → P2002
+    if (e.code === 'P2002') {
+      return { ok: true, message: 'Already unlocked' };
+    }
     throw e;
   }
   return { ok: true };
@@ -30,7 +32,7 @@ export async function unlockCharacter(user_id, character_id) {
 export function listMyCharacters(user_id) {
   return prisma.userCharacter.findMany({
     where: { user_id },
-    include: { character: true },
-    orderBy: { character_id: 'desc' }
+    include: { character: true }, // join Character
+    orderBy: { character_id: 'asc' }, // string 정렬
   });
 }

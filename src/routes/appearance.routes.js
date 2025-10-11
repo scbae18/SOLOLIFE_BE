@@ -1,4 +1,4 @@
-// src/routes/appearance.route.js
+// src/routes/appearance.routes.js
 import { Router } from 'express';
 import { authRequired } from '../lib/authMiddleware.js';
 import * as c from '../controllers/appearance.controller.js';
@@ -40,7 +40,7 @@ const r = Router();
  *               type: object
  *               properties:
  *                 user_id: { type: integer }
- *                 current_character_id: { type: integer, nullable: true }
+ *                 current_character_id: { type: string, nullable: true }   # <- string으로 변경
  *                 current_assets:
  *                   $ref: '#/components/schemas/CurrentAssets'
  *   put:
@@ -55,7 +55,7 @@ const r = Router();
  *           schema:
  *             type: object
  *             properties:
- *               character_id: { type: integer, nullable: true, example: 5 }
+ *               character_id: { type: string, nullable: true, example: "rookie_001" }  # <- string
  *               assets:
  *                 $ref: '#/components/schemas/CurrentAssets'
  *                 example:

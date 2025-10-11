@@ -18,7 +18,7 @@ const r = Router();
  *   post:
  *     tags: [Admin - Characters]
  *     summary: 캐릭터 생성(관리자)
- *     description: 신규 캐릭터 메타데이터를 등록합니다.
+ *     description: 신규 캐릭터를 등록합니다. (PK는 문자열 id)
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
  *       required: true
@@ -26,18 +26,17 @@ const r = Router();
  *         application/json:
  *           schema:
  *             type: object
- *             required: [character_name]
+ *             required: [id, theme, gender]
  *             properties:
- *               character_name:
+ *               id:
  *                 type: string
- *                 example: "루키 탐험가"
- *               image_url:
+ *                 example: "rookie_001"
+ *               theme:
  *                 type: string
- *                 format: uri
- *                 example: "https://cdn.example.com/characters/rookie.png"
- *               description:
+ *                 example: "forest"
+ *               gender:
  *                 type: string
- *                 example: "탐험을 막 시작한 초보 캐릭터"
+ *                 example: "male"
  *     responses:
  *       200:
  *         description: 생성된 캐릭터
@@ -46,24 +45,31 @@ const r = Router();
  *             schema:
  *               type: object
  *               properties:
- *                 character_id:   { type: integer, example: 7 }
- *                 character_name: { type: string,  example: "루키 탐험가" }
- *                 image_url:      { type: string,  format: uri, example: "https://cdn.example.com/characters/rookie.png" }
- *                 description:    { type: string,  example: "탐험을 막 시작한 초보 캐릭터" }
+ *                 id:     { type: string, example: "rookie_001" }
+ *                 theme:  { type: string, example: "forest" }
+ *                 gender: { type: string, example: "male" }
  *       400: { description: 잘못된 요청 본문 }
  *       401: { description: 인증 실패 }
  *       403: { description: 관리자 권한 없음 }
  */
 r.post('/admin/characters', authRequired, adminOnly, async (req, res, next) => {
   try {
-    const { character_name, image_url, description } = req.body ?? {};
-    if (!character_name) return res.status(400).json({ error: 'character_name required' });
+    const { id, theme, gender } = req.body ?? {};
+    if (!id || typeof id !== 'string' || !id.trim()) {
+      return res.status(400).json({ error: 'id (string) is required' });
+    }
+    if (!theme) return res.status(400).json({ error: 'theme required' });
+    if (!gender) return res.status(400).json({ error: 'gender required' });
 
     const created = await prisma.character.create({
-      data: { character_name, image_url, description },
+      data: { id, theme, gender },
     });
     res.json(created);
   } catch (e) {
+    // 중복 키 등
+    if (e.code === 'P2002') {
+      return res.status(400).json({ error: 'Duplicate character id' });
+    }
     next(e);
   }
 });

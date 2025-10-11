@@ -8,7 +8,7 @@ const DEFAULT_ASSETS = { TYPE1: 1, TYPE2: 2, TYPE3: 3 };
 function sanitizeAssetsPayload(assets) {
   const out = {};
   for (const t of SUPPORTED_TYPES) {
-    if (assets.hasOwnProperty(t)) {
+    if (Object.prototype.hasOwnProperty.call(assets, t)) {
       const v = assets[t];
       if (v === null) {
         out[t] = null;
@@ -29,17 +29,17 @@ export async function getMyAppearance(user_id) {
     where: { user_id },
     select: {
       user_id: true,
-      current_character_id: true,
-      current_assets: true
-    }
+      current_character_id: true, // string|null
+      current_assets: true,
+    },
   });
   if (!me) throw new ApiError(404, 'User not found');
 
   const map = { ...DEFAULT_ASSETS, ...(me.current_assets ?? {}) };
   return {
     user_id: me.user_id,
-    current_character_id: me.current_character_id,
-    current_assets: map
+    current_character_id: me.current_character_id, // string|null
+    current_assets: map,
   };
 }
 
@@ -52,30 +52,32 @@ export async function updateMyAppearance(user_id, payload = {}) {
     where: { user_id },
     select: {
       user_id: true,
-      assets: true,
+      assets: true,           // owned asset ids (number[])
       current_assets: true,
-      current_character_id: true
-    }
+      current_character_id: true, // string|null
+    },
   });
   if (!me) throw new ApiError(404, 'User not found');
 
   const patch = {};
 
-  // ✅ 캐릭터 변경
+  // ✅ 캐릭터 변경 (이제 문자열 ID)
   if (character_id !== undefined) {
     if (character_id === null) {
       patch.current_character_id = null;
     } else {
-      const cid = Number(character_id);
-      if (!Number.isInteger(cid)) throw new ApiError(400, 'character_id must be an integer');
+      if (typeof character_id !== 'string' || !character_id.trim()) {
+        throw new ApiError(400, 'character_id must be a non-empty string');
+      }
 
+      // 소유 여부 확인 (UserCharacter의 복합 PK: [user_id, character_id(string)])
       const owned = await prisma.userCharacter.findUnique({
-        where: { user_id_character_id: { user_id, character_id: cid } },
-        select: { user_id: true }
+        where: { user_id_character_id: { user_id, character_id } },
+        select: { user_id: true },
       });
       if (!owned) throw new ApiError(403, 'You do not own this character');
 
-      patch.current_character_id = cid;
+      patch.current_character_id = character_id;
     }
   }
 
@@ -93,12 +95,12 @@ export async function updateMyAppearance(user_id, payload = {}) {
       // DB에서 타입 확인
       const assetsInDb = await prisma.asset.findMany({
         where: { asset_id: { in: idsToCheck } },
-        select: { asset_id: true, type: true }
+        select: { asset_id: true, type: true },
       });
       const typeMap = Object.fromEntries(assetsInDb.map(a => [a.asset_id, a.type]));
 
       for (const type of SUPPORTED_TYPES) {
-        if (!inMap.hasOwnProperty(type)) continue;
+        if (!Object.prototype.hasOwnProperty.call(inMap, type)) continue;
 
         const asset_id = inMap[type];
         if (asset_id === null) {
@@ -124,11 +126,11 @@ export async function updateMyAppearance(user_id, payload = {}) {
   const updated = await prisma.user.update({
     where: { user_id },
     data: patch,
-    select: { user_id: true, current_character_id: true, current_assets: true }
+    select: { user_id: true, current_character_id: true, current_assets: true },
   });
 
   return {
     ...updated,
-    current_assets: { ...DEFAULT_ASSETS, ...(updated.current_assets ?? {}) }
+    current_assets: { ...DEFAULT_ASSETS, ...(updated.current_assets ?? {}) },
   };
 }

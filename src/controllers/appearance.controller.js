@@ -11,6 +11,7 @@ export async function getMine(req, res, next) {
 export async function updateMine(req, res, next) {
   try {
     const { character_id, assets } = req.body || {};
+    // character_id는 문자열이므로 캐스팅 금지
     const result = await svc.updateMyAppearance(req.user.user_id, { character_id, assets });
     res.json(result);
   } catch (e) { next(e); }

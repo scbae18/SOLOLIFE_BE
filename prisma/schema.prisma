@@ -18,7 +18,7 @@ model User {
   password_hash        String
   created_at           DateTime @default(now()) @db.Timestamptz(3)
   is_public_profile    Boolean  @default(true)
-  current_character_id Int?
+  current_character_id String?  @db.VarChar(50) // Int? → String?
   current_assets       Json?    @default("{\"TYPE1\":1,\"TYPE2\":2,\"TYPE3\":3}")
   onboarding_answers   Json?
   assets               Int[]    @default([])
@@ -37,32 +37,29 @@ model User {
   scraps         Scrap[]
   likeFolders    LikeFolder[]
 
-  // current selected character
-  currentCharacter Character? @relation("CurrentUserCharacter", fields: [current_character_id], references: [character_id])
+  // current selected character (String PK 참조)
+  currentCharacter Character? @relation(name: "CurrentUserCharacter", fields: [current_character_id], references: [id], onDelete: SetNull)
 
   // owned/unlocked characters
   characters UserCharacter[]
+
   tmp_probe Int? @default(0)
 }
 
 model Character {
-  character_id   Int     @id @default(autoincrement())
-  character_name String  @db.VarChar(255)
-  description    String?
-  image_url      String? @db.VarChar(255)
+  id     String @id @db.VarChar(50)
+  theme  String @db.VarChar(50)
+  gender String @db.VarChar(10)
 
-  // reverse side of user's current character
-  currentUsers User[] @relation("CurrentUserCharacter")
-
-  // users who own this character
-  users UserCharacter[]
+  currentUsers User[]          @relation("CurrentUserCharacter")
+  users        UserCharacter[]
 }
 
 model UserCharacter {
   user_id      Int
-  character_id Int
+  character_id String @db.VarChar(50)
 
-  character Character @relation(fields: [character_id], references: [character_id], onDelete: Cascade)
+  character Character @relation(fields: [character_id], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
 
   @@id([user_id, character_id])
