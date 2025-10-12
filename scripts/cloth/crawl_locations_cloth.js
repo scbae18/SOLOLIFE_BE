@@ -1,124 +1,123 @@
-// crawl_clothes_enhanced_variants_with_geo_wide.js
+// crawl_clothes_wide_coverage.js
 import "dotenv/config";
 import axios from "axios";
 import crypto from "crypto";
 import { PrismaClient } from "@prisma/client";
 
 /**
- * 의류 쇼핑(영통권) 크롤러 확장판 — '키워드'는 "빈티지" 하나만 태깅, 매치 안 되면 공란([])
- * - 카테고리: "옷" (동의어/세부 포함)
- * - 키워드 자동 태깅: "빈티지"만 (해당 없으면 비움)
- * - 지역 바리에이션: 동/역/랜드마크/인접구 + 관용표현(근처/역세권/로데오 등)
- * - 수식어 풀 확대 + 2/3콤보 + 해시태그 확장
- * - 템플릿 확장(신상/오픈/리뉴얼/세일/환불/교환/피팅룸/사이즈 등)
- * - Naver Local 페이지네이션 + 블로그/웹 스니펫 캐시
- * - Google TextSearch/Details → 좌표/영업시간/types
- * - 합성 단계 조기 종료(early break) + 진행 로그 + 워밍업 핑
+ * 옷(영통권) 크롤러 - 최대 커버리지 버전
+ * - 지역 × 카테고리(동의어)만 사용하여 광범위 탐색
+ * - feature(무드 태그) 로직은 그대로 유지
+ * - category는 "옷"으로 저장
+ * - keywords는 ["빈티지"]만 저장(규칙 기반 추론)
+ * - Google TextSearch로 { place_id, lat, lng }만 사용 (가능 시)
+ * - description/opening_hours/price/rating/photo는 저장하지 않음
  */
 
 const prisma = new PrismaClient();
 
-// =================== 정책/확장 파라미터 ===================
+// =================== 지역 설정 ===================
 const REGION_CANON = "경기도 수원시 영통구";
-
-// 지역 별칭/세부
 const REGION_ALIASES = [
-  "경기도 수원시 영통구", "수원시 영통구", "수원 영통구", "영통구",
-];
-const SUBAREAS = [
-  "영통동", "망포동", "매탄동", "원천동",
-  // 인접 동(교차검색)
-  "이의동", "하동", "상현동", "우만동", "권선동", "매교동",
-];
-const STATIONS = [
-  "영통역", "망포역", "청명역", "매탄권선역",
-  "광교중앙역", "광교역",
-];
-const LANDMARKS = [
-  "경희대학교 국제캠퍼스", "광교호수공원", "영통롯데마트",
-  "망포홈플러스", "갤러리아광교", "수원컨벤션센터",
-  "광교아울렛", "광교로데오", "영통로데오", "영통사거리",
-];
-const ADJACENT_DISTRICTS = [
-  "수원시 장안구", "수원시 팔달구", "수원시 권선구", "용인시 수지구", "용인시 기흥구",
+  "경기도 수원시 영통구",
+  "수원시 영통구",
+  "수원 영통구",
+  "영통구",
 ];
 
-// 카테고리: 옷 (동의어/세부)
-const CATEGORY_KEYWORDS = ["옷"];
+const SUBAREAS = [
+  "영통동",
+  "망포동",
+  "매탄동",
+  "원천동",
+  "이의동",
+  "하동",
+  "상현동",
+  "우만동",
+  "권선동",
+  "매교동",
+];
+
+const STATIONS = ["영통역", "망포역", "청명역", "매탄권선역", "광교중앙역", "광교역"];
+
+const LANDMARKS = [
+  "경희대학교 국제캠퍼스",
+  "광교호수공원",
+  "영통롯데마트",
+  "망포홈플러스",
+  "갤러리아광교",
+  "수원컨벤션센터",
+  "광교아울렛",
+  "광교로데오",
+  "영통로데오",
+  "영통사거리",
+];
+
+const ADJACENT_DISTRICTS = [
+  "수원시 장안구",
+  "수원시 팔달구",
+  "수원시 권선구",
+  "용인시 수지구",
+  "용인시 기흥구",
+];
+
+// =================== 카테고리(동의어) ===================
+const CATEGORY_KEYWORDS = ["옷"]; // 메인 카테고리 키워드
 const CATEGORY_SYNONYMS = {
   옷: [
-    "옷", "의류", "패션", "의상", "남성복", "여성복", "유니섹스",
-    "편집샵", "셀렉샵", "부티크", "디자이너", "스트릿", "빈티지",
-    "아울렛", "쇼핑몰", "편집숍", "편집 샵", "셀렉 숍",
-    "캐주얼", "정장", "수트", "테일러", "수입편집샵",
+    // 상위/일반
+    "옷",
+    "의류",
+    "패션",
+    "의상",
+    "의복",
+    "쇼핑",
+    // 타입/형태
+    "의류매장",
+    "옷가게",
+    "편집샵",
+    "셀렉샵",
+    "부티크",
+    "편집숍",
+    "스트리트",
+    "캐주얼",
+    "빈티지샵",
+    "구제샵",
+    "디자이너샵",
+    "편집 스토어",
+    // 성별/카테고리 분화
+    "남성의류",
+    "여성의류",
+    "유니섹스",
+    "데님샵",
+    // 쇼핑 맥락(커버리지 확대용)
+    "패션 매장",
+    "패션 쇼핑",
+    "옷 쇼핑",
+    "패션 편집샵",
   ],
 };
 
-// 수식어 풀 (쇼핑 맥락)
-const INTENT_MODIFIERS = [
-  "인기", "추천", "베스트", "핫플", "로컬", "신상", "오픈", "리뉴얼", "재오픈",
-  "세일", "할인", "프로모션", "이벤트",
-];
-const MOOD_MODIFIERS = [
-  "분위기 좋은", "감성", "아늑한", "조용한", "힙한", "채광 좋은", "뷰 좋은", "넓은",
-];
-const SHOPPING_MODIFIERS = [
-  "가격대", "브랜드", "코디", "스타일링", "피팅룸", "사이즈", "빅사이즈", "XS", "S", "M", "L", "XL",
-  "환불", "교환", "교환환불", "교환/환불", "AS", "재고", "주차", "포장", "배달",
-  "학생할인", "멤버십", "적립", "리폼", "수선",
-];
-const TARGET_POLICY = [
-  "남성복", "여성복", "유니섹스", "커플룩", "스트릿", "빈티지", "디자이너",
-];
-
-// 템플릿 확장(쇼핑 문맥)
+// =================== 쿼리 템플릿 (의류에 맞춤) ===================
 const QUERY_TEMPLATES = [
   "{region} {category}",
-  "{region} {modifier} {category}",
-  "{region} {category} 코디",
-  "{region} {category} 브랜드",
-  "{region} {category} 가격",
-  "{region} {category} 세일",
-  "{region} {category} 이벤트",
-  "{region} {category} 환불",
-  "{region} {category} 교환",
-  "{region} {category} 피팅룸",
-  "{region} {category} 사이즈",
-  "{region} {category} 후기",
-  "{region} {category} 리뷰",
-  "{region} {category} 블로그",
-  "{region} {modifier} {category} 후기",
-  "{region} {modifier} {category} 리뷰",
-  "{region} {modifier} {category} 블로그",
-  "{region} 신상 {category}",
-  "{region} 오픈 {category}",
-  "{region} 리뉴얼 {category}",
-  "{region} 세일 {category}",
-  "{region} #{category}",
-  "{region} #{modifier} #{category}",
+  "{region} {category} 쇼핑",
+  "{region} {category} 추천",
 ];
 
-// ===== 상한/콤보 제어(보수적 스타트값) =====
-const DISPLAY = 30;
-const MAX_PAGES_PER_QUERY = 4;
-const MAX_QUERIES_PER_CATEGORY = 180;
-const MAX_ITEMS_PER_CATEGORY   = 400;
-const BASE_DELAY_MS = 140;
-
-// 콤보 옵션
-const USE_COMBO_2 = true;
-const USE_COMBO_3 = true;
-const MAX_3_COMBOS = 400;
-
-// opening_hours가 없으면 features.openingHours 폴백 사용 여부
-const USE_FEATURES_FALLBACK = false;
+// ===== 상한/페이지/속도 =====
+const DISPLAY = 30; // Naver Local: 페이지당 최대 30
+const MAX_PAGES_PER_QUERY = 10; // 쿼리당 최대 300건
+const MAX_QUERIES_PER_CATEGORY = 500; // 카테고리당 쿼리 500개
+const MAX_ITEMS_PER_CATEGORY = 2000; // 실제 upsert 최대치
+const BASE_DELAY_MS = 220; // RPS 완화
 
 // =================== API URL/ENV ===================
-const NAVER_LOCAL_URL       = "https://openapi.naver.com/v1/search/local.json";
-const NAVER_BLOG_URL        = "https://openapi.naver.com/v1/search/blog.json";
-const NAVER_WEB_URL         = "https://openapi.naver.com/v1/search/webkr.json";
-const GOOGLE_PLACES_TEXT    = "https://maps.googleapis.com/maps/api/place/textsearch/json";
-const GOOGLE_PLACES_DETAILS = "https://maps.googleapis.com/maps/api/place/details/json";
+const NAVER_LOCAL_URL = "https://openapi.naver.com/v1/search/local.json";
+const NAVER_BLOG_URL = "https://openapi.naver.com/v1/search/blog.json";
+const NAVER_WEB_URL = "https://openapi.naver.com/v1/search/webkr.json";
+const GOOGLE_PLACES_TEXT =
+  "https://maps.googleapis.com/maps/api/place/textsearch/json";
 
 const {
   NAVER_OPENAPI_CLIENT_ID,
@@ -130,7 +129,7 @@ if (!NAVER_OPENAPI_CLIENT_ID || !NAVER_OPENAPI_CLIENT_SECRET) {
   throw new Error("NAVER_OPENAPI_CLIENT_ID / NAVER_OPENAPI_CLIENT_SECRET 누락");
 }
 if (!GOOGLE_MAPS_API_KEY) {
-  console.warn("[env] GOOGLE_MAPS_API_KEY 누락 (좌표/영업시간/types 채우려면 필요)");
+  console.warn("[env] GOOGLE_MAPS_API_KEY 누락 (좌표 채우려면 필요)");
 }
 
 const localHeaders = {
@@ -141,77 +140,98 @@ const localHeaders = {
 
 // =================== 유틸/정규화 ===================
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function withRetry(fn, tries = 3, delay = 400) {
   let last;
   for (let i = 0; i < tries; i++) {
-    try { return await fn(); }
-    catch (e) {
-      console.error("[HTTP ERROR try", i+1, "]", e?.response?.status, e?.message);
-      last = e; await sleep(delay * (i + 1));
+    try {
+      return await fn();
+    } catch (e) {
+      console.error("[HTTP ERROR try", i + 1, "]", e?.response?.status, e?.message);
+      last = e;
+      await sleep(delay * (i + 1));
     }
   }
   throw last;
 }
+
 const stripHtml = (s = "") => s.replace(/<[^>]*>/g, " ").trim();
 
 function normalizeText(s = "") {
-  return s.replace(/<[^>]*>/g, " ")
+  return s
+    .replace(/<[^>]*>/g, " ")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
 }
 
+function toDecimalString6(v) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return null;
+  return Number(v).toFixed(6);
+}
+
 // 쿼리 정규화/중복 억제
-const STOPWORDS = new Set(["에서", "근처", "근방", "주변", "인근", "부근", "역근처", "역", "맛"]);
+const STOPWORDS = new Set([
+  "에서",
+  "근처",
+  "근방",
+  "주변",
+  "인근",
+  "부근",
+  "역근처",
+  "역",
+  "맛", // 의류에도 영향 없지만 보수적으로 제거
+]);
+
 function normalizeQuery(q = "") {
   return q
-    .replace(/[^\p{L}\p{N}\s#]/gu, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/\s+#/g, " #")
-    .replace(/#{2,}/g, "#")
     .replace(/\s{2,}/g, " ");
 }
+
 function dedupeTokens(q) {
   const toks = q.split(/\s+/).filter(Boolean);
   const seen = new Set();
   const out = [];
   for (let t of toks) {
-    if (/^#/.test(t)) t = t.toLowerCase();
     if (STOPWORDS.has(t)) continue;
     if (seen.has(t)) continue;
-    seen.add(t); out.push(t);
+    seen.add(t);
+    out.push(t);
   }
   return out.filter((t, i) => i === 0 || t !== out[i - 1]).join(" ");
 }
+
 const canon = (q) => dedupeTokens(normalizeQuery(q));
+
 const makeDedupeSig = ({ name, address }) =>
-  crypto.createHash("sha256")
+  crypto
+    .createHash("sha256")
     .update(`${(name || "").toLowerCase()}|${(address || "").toLowerCase()}`)
-    .digest("hex").slice(0, 32);
+    .digest("hex")
+    .slice(0, 32);
 
-function kCombinations(arr, k) {
-  const res = [];
-  (function bt(start, path) {
-    if (path.length === k) { res.push(path.slice()); return; }
-    for (let i = start; i < arr.length; i++) { path.push(arr[i]); bt(i + 1, path); path.pop(); }
-  })(0, []);
-  return res;
-}
-
-// =================== 허용 리스트 & 룰 ===================
-// * 매장 분위기 태그(선택적 사용; UI/검색에 유용)
+// =================== feature(무드) 규칙 (그대로 유지) ===================
 const ALLOWED_MOOD_FEATURES = [
-  "사람많은", "한적한", "넓은", "아늑한", "조용한", "활기찬", "밝은", "어두운",
+  "사람많은",
+  "한적한",
+  "넓은",
+  "아늑한",
+  "조용한",
+  "활기찬",
+  "밝은",
+  "어두운",
 ];
 
-// * 의류 키워드 태깅 — 요구사항: "빈티지"만, 없으면 공란([])
+// 키워드: "빈티지" 한 가지
 const ALLOWED_KEYWORDS = ["빈티지"];
 
-// 분위기 규칙
+// 무드 규칙
 const MOOD_RULES = {
-  사람많은: [/사람\s*많/, /붐비/, /북적/, /바글/, /혼잡/, /줄\s*길/],
+  사람많은: [/사람\s*많/, /붐비/, /북적/, /바글/, /혼잡/, /웨이팅/, /줄\s*길/],
   한적한: [/한적/, /한산/, /널널/, /조용조용/, /사람\s*없/, /여유로/],
   넓은: [/넓/, /좌석\s*많/, /자리\s*여유/, /공간\s*넉넉/, /층고\s*높/],
   아늑한: [/아늑/, /포근/, /따뜻한\s*분위기/, /코지/, /감성\s*인테리어/],
@@ -221,7 +241,38 @@ const MOOD_RULES = {
   어두운: [/어둡/, /무드등/, /은은한\s*조명/, /저조도/],
 };
 
+// ====== 의류 키워드 추론 규칙 (빈티지) ======
+const VINTAGE_STRONG = [
+  /빈티지/,
+  /구제/,
+  /레트로/,
+  /아메카지/,
+  /밀리터리\s*빈티지/,
+  /워크웨어/,
+  /러기드/,
+  /래그드/, // 흔한 표기 변형
+  /데드스탁/,
+  /dead\s*stock/i,
+  /thrift/i,
+  /thrifting/i,
+  /second\s*hand/i,
+  /pre[\s-]*owned/i,
+];
+
+const VINTAGE_WEAK = [
+  /리셀/,
+  /아카이브/,
+  /올드/,
+  /리워크/,
+  /리메이크/,
+  /빈티지무드/,
+  /old\s*school/i,
+  /retro/i,
+];
+
+// 1) 무드 태그 추론
 const matchAny = (rules, text) => rules.some((r) => r.test(text));
+
 function inferMoodTags(textRaw) {
   const t = normalizeText(textRaw);
   const found = [];
@@ -229,106 +280,173 @@ function inferMoodTags(textRaw) {
     const rules = MOOD_RULES[tag] || [];
     if (matchAny(rules, t)) found.push(tag);
   }
+  // 상충 조정
   if (found.includes("조용한") && found.includes("사람많은")) {
-    const crowdStrong = matchAny([/줄\s*길/, /북적/, /붐비/], t);
-    return crowdStrong ? found.filter((x) => x !== "조용한") : found.filter((x) => x !== "사람많은");
+    const crowdStrong = matchAny(
+      [/웨이팅/, /줄\s*길/, /북적/, /붐비/],
+      t
+    );
+    return crowdStrong
+      ? found.filter((x) => x !== "조용한")
+      : found.filter((x) => x !== "사람많은");
   }
   return Array.from(new Set(found));
 }
 
-// ===== 의류 키워드 태깅 — "빈티지"만 =====
-const VINTAGE_POS = [
-  /빈티지/, /vintage/i, /레트로/, /복고/, /구제/,
-  /\b90s\b/, /\b2000s\b/, /Y2K/i
-];
+// 2) 키워드(빈티지) 추론 (점수 기반)
+function inferFashionKeywordTags({ textRaw }) {
+  const t = normalizeText(textRaw || "");
+  let score = 0;
 
-function inferClothesKeywords(textRaw) {
-  const t = normalizeText(textRaw);
+  if (VINTAGE_STRONG.some((r) => r.test(t))) score += 2;
+
+  const weakHits = VINTAGE_WEAK.reduce((acc, r) => acc + (r.test(t) ? 1 : 0), 0);
+  if (weakHits >= 2) score += 1;
+
   const out = [];
-  if (matchAny(VINTAGE_POS, t)) out.push("빈티지");
-  // 없으면 공란([]) 유지
-  return out.filter(k => ALLOWED_KEYWORDS.includes(k));
+  if (score >= 2) out.push("빈티지");
+
+  return Array.from(new Set(out));
 }
 
 // =================== 캐시 ===================
 const SNIPPET_CACHE = new Map();
+const GOOGLE_TEXT_CACHE = new Map();
 
 // =================== 외부 API ===================
 async function fetchLocal(query, start = 1) {
-  const { data } = await withRetry(() =>
+  const fn = () =>
     axios.get(NAVER_LOCAL_URL, {
       headers: localHeaders,
       params: { query, display: DISPLAY, start, sort: "random" },
       timeout: 8000,
-    })
+      validateStatus: (s) => (s >= 200 && s < 300) || s === 429,
+    });
+
+  const { data } = await withRetry(
+    async () => {
+      const res = await fn();
+      if (res.status === 429) throw new Error("NAVER_RATE_LIMIT");
+      return res;
+    },
+    5,
+    600
   );
+
   return data.items || [];
 }
+
 async function fetchBlogSnippetsStrong({ name, region, category }) {
-  const key = `BLOG:${name}|${region}|${category||""}`;
+  const key = `BLOG:${name}|${region}|${category || ""}`;
   if (SNIPPET_CACHE.has(key)) return SNIPPET_CACHE.get(key);
+
   const variants = [
-    `${name} ${region} 후기 리뷰 ${category||""}`,
-    `${name} ${region} 코디 스타일링 브랜드 ${category||""}`,
-    `${name} ${region} 빈티지 ${category||""}`,
-    `${name} ${region} 세일 이벤트 환불 교환 사이즈 피팅룸 ${category||""}`,
+    `${name} ${region} 후기 리뷰 ${category || ""}`,
+    `${name} ${region} 분위기 옷 의류 패션 ${category || ""}`,
+    `${name} ${region} 빈티지 구제 레트로 ${category || ""}`,
+    `${name} ${region} ${category || ""}`,
   ];
+
   let merged = "";
   for (const q of variants) {
     try {
-      const { data } = await withRetry(() =>
-        axios.get(NAVER_BLOG_URL, { headers: localHeaders, params: { query: q, display: 20 }, timeout: 8000 })
+      const { data } = await withRetry(
+        () =>
+          axios.get(NAVER_BLOG_URL, {
+            headers: localHeaders,
+            params: { query: q, display: 20 },
+            timeout: 8000,
+          }),
+        3,
+        400
       );
       const items = data?.items || [];
-      merged += " " + items.map(it => normalizeText(`${it.title} ${it.description}`)).join(" ");
+      merged +=
+        " " +
+        items
+          .map((it) => normalizeText(`${it.title} ${it.description}`))
+          .join(" ");
       await sleep(60);
     } catch {}
   }
+
   merged = merged.trim();
   SNIPPET_CACHE.set(key, merged);
   return merged;
 }
-async function fetchWebSnippets(query, display=20) {
+
+async function fetchWebSnippets(query, display = 20) {
   const key = `WEB:${query}|${display}`;
   if (SNIPPET_CACHE.has(key)) return SNIPPET_CACHE.get(key);
-  const { data } = await withRetry(() =>
-    axios.get(NAVER_WEB_URL, { headers: localHeaders, params: { query, display: Math.min(display, 30) }, timeout: 8000 })
+
+  const { data } = await withRetry(
+    () =>
+      axios.get(NAVER_WEB_URL, {
+        headers: localHeaders,
+        params: { query, display: Math.min(display, 30) },
+        timeout: 8000,
+      }),
+    3,
+    400
   );
+
   const items = data?.items || [];
-  const merged = items.map(it => normalizeText(`${it.title} ${it.description}`)).join(" ");
+  const merged = items
+    .map((it) => normalizeText(`${it.title} ${it.description}`))
+    .join(" ");
   SNIPPET_CACHE.set(key, merged);
   return merged;
 }
+
+// Google: TextSearch → place_id, lat, lng (ONLY)
 async function searchPlaceByText(name, address) {
   if (!GOOGLE_MAPS_API_KEY) return null;
+
   const qPrimary = address ? `${name} ${address}` : `${name} ${REGION_CANON}`;
   const qFallback = `${name} ${REGION_CANON}`;
-  const tryQuery = async (q) => {
-    const params = { query: q, key: GOOGLE_MAPS_API_KEY, language: "ko" };
-    const { data } = await withRetry(() => axios.get(GOOGLE_PLACES_TEXT, { params, timeout: 8000 }));
-    const res = data?.results?.[0];
-    if (!res) return null;
-    return { place_id: res.place_id ?? null, lat: res.geometry?.location?.lat ?? null, lng: res.geometry?.location?.lng ?? null };
-  };
-  let found = await tryQuery(qPrimary);
-  if (!found) found = await tryQuery(qFallback);
-  return found;
-}
-async function fetchPlaceDetails(placeId) {
-  if (!placeId || !GOOGLE_MAPS_API_KEY) return null;
-  const { data } = await withRetry(() =>
-    axios.get(GOOGLE_PLACES_DETAILS, {
-      params: { place_id: placeId, key: GOOGLE_MAPS_API_KEY, fields: "opening_hours,types,price_level", language: "ko" },
-      timeout: 8000,
-    })
-  );
-  const r = data?.result || {};
-  const oh = r.opening_hours || null;
-  return {
-    opening_hours: oh ? { open_now: oh.open_now ?? null, weekday_text: oh.weekday_text ?? null, periods: oh.periods ?? null } : null,
-    types: Array.isArray(r.types) ? r.types : [],
-    price_level: typeof r.price_level === "number" ? r.price_level : null,
-  };
+  const keys = [qPrimary, qFallback];
+
+  for (const q of keys) {
+    if (GOOGLE_TEXT_CACHE.has(q)) return GOOGLE_TEXT_CACHE.get(q);
+    try {
+      const params = { query: q, key: GOOGLE_MAPS_API_KEY, language: "ko" };
+      const { data } = await withRetry(
+        async () => {
+          const res = await axios.get(GOOGLE_PLACES_TEXT, {
+            params,
+            timeout: 8000,
+          });
+          if (res?.data?.status === "OVER_QUERY_LIMIT") {
+            throw new Error("OVER_QUERY_LIMIT");
+          }
+          return res;
+        },
+        4,
+        800
+      );
+
+      const r = data?.results?.[0];
+      const found = r
+        ? {
+            place_id: r.place_id ?? null,
+            lat: r.geometry?.location?.lat ?? null,
+            lng: r.geometry?.location?.lng ?? null,
+          }
+        : null;
+
+      GOOGLE_TEXT_CACHE.set(q, found);
+      if (found) return found;
+    } catch (e) {
+      if (String(e?.message).includes("OVER_QUERY_LIMIT")) {
+        console.warn("[google:text] quota hit; backing off more");
+        await sleep(2000);
+        continue;
+      }
+      console.warn("[google:text] error", e?.message || e);
+    }
+  }
+
+  return null;
 }
 
 // =================== 업서트 ===================
@@ -338,85 +456,108 @@ async function upsertLocation(item, catLabel) {
   const desc = stripHtml(item.description || "");
   const dedupe_signature = makeDedupeSig({ name, address });
 
-  const existing = await prisma.location.findUnique({ where: { dedupe_signature } });
+  const existing = await prisma.location.findUnique({
+    where: { dedupe_signature },
+  });
 
-  // 텍스트 보강
-  let extraText = await fetchBlogSnippetsStrong({ name, region: REGION_CANON, category: catLabel });
+  // 텍스트 보강(무드/키워드 추론용)
+  let extraText = await fetchBlogSnippetsStrong({
+    name,
+    region: REGION_CANON,
+    category: catLabel,
+  });
   if (!extraText || extraText.length < 50) {
     const webFallback = await fetchWebSnippets(
-      `${name} ${REGION_CANON} ${catLabel||""} 후기 리뷰 코디 브랜드 빈티지 세일 환불 교환 사이즈 피팅룸`
+      `${name} ${REGION_CANON} ${catLabel || ""} 후기 리뷰 빈티지 구제 레트로`
     );
-    extraText = `${extraText||""} ${webFallback||""}`.trim();
+    extraText = `${extraText || ""} ${webFallback || ""}`.trim();
   }
-  const baseTextRaw = `${name} ${desc} ${extraText||""} ${catLabel||""}`;
 
-  // Google 좌표 + details
+  const baseTextRaw = `${name} ${desc} ${extraText || ""} ${catLabel || ""}`;
+
+  // Google 좌표
   let coords = { place_id: null, lat: null, lng: null };
   try {
     const found = await searchPlaceByText(name, address);
     if (found) coords = found;
-    console.log(`[google:text] ${name} → pid=${coords.place_id || "none"}, lat=${coords.lat}, lng=${coords.lng}`);
-  } catch (e) { console.warn("[google:text] error", e?.message || e); }
+    console.log(
+      `[google:text] ${name} → pid=${coords.place_id || "none"}, lat=${
+        coords.lat
+      }, lng=${coords.lng}`
+    );
+  } catch (e) {
+    console.warn("[google:text] error", e?.message || e);
+  }
 
-  let opening_hours = null;
-  let place_types = [];
-  try {
-    if (coords.place_id) {
-      const details = await fetchPlaceDetails(coords.place_id);
-      opening_hours = details?.opening_hours || null;
-      place_types = details?.types || [];
-    }
-    console.log(`[google:details] ${name} → hours=${opening_hours ? "ok" : "none"}, types=${place_types.join(",") || "none"}`);
-  } catch (e) { console.warn("[google:details] error", e?.message || e); }
-
-  // ====== 추론 ======
+  // 태깅
   const moodTags = inferMoodTags(baseTextRaw);
-  const keywordTags = inferClothesKeywords(baseTextRaw); // "빈티지"만, 아니면 빈 배열
+  const keywordTags = inferFashionKeywordTags({ textRaw: baseTextRaw });
 
   // 병합(허용 집합 필터)
-  const prevKeywords = Array.isArray(existing?.keywords) ? existing.keywords : [];
-  const mergedKeywords = Array.from(new Set([...prevKeywords, ...keywordTags].filter(k => ALLOWED_KEYWORDS.includes(k))));
-  const prevFeaturesFlat = Array.isArray(existing?.features_flat) ? existing.features_flat : [];
-  const mergedMoodFlat = Array.from(new Set([...prevFeaturesFlat, ...moodTags].filter(f => ALLOWED_MOOD_FEATURES.includes(f))));
+  const prevKeywords = Array.isArray(existing?.keywords)
+    ? existing.keywords
+    : [];
+  const mergedKeywords = Array.from(
+    new Set(
+      [...prevKeywords, ...keywordTags].filter((k) =>
+        ALLOWED_KEYWORDS.includes(k)
+      )
+    )
+  );
 
-  // features JSON
+  const prevFeaturesFlat = Array.isArray(existing?.features_flat)
+    ? existing.features_flat
+    : [];
+  const mergedMoodFlat = Array.from(
+    new Set(
+      [...prevFeaturesFlat, ...moodTags].filter((f) =>
+        ALLOWED_MOOD_FEATURES.includes(f)
+      )
+    )
+  );
+
   const featuresJson = {
     moods: mergedMoodFlat,
     _debugSnippet: baseTextRaw.slice(0, 200),
   };
-  const featuresFinal = USE_FEATURES_FALLBACK && opening_hours
-    ? { ...featuresJson, openingHours: opening_hours }
-    : featuresJson;
 
-  // 업서트
+  const latStr =
+    coords.lat != null
+      ? toDecimalString6(coords.lat)
+      : existing?.latitude
+      ? String(existing.latitude)
+      : null;
+  const lngStr =
+    coords.lng != null
+      ? toDecimalString6(coords.lng)
+      : existing?.longitude
+      ? String(existing.longitude)
+      : null;
+
   const updatePayload = {
     location_name: name,
     address,
-    latitude:  (coords.lat ?? existing?.latitude ?? null),
-    longitude: (coords.lng ?? existing?.longitude ?? null),
+    latitude: latStr,
+    longitude: lngStr,
     category: "옷",
-    description: desc || null,
-    keywords: { set: mergedKeywords }, // "빈티지"만, 없으면 빈 배열([])
-    features: featuresFinal,
-    features_flat: { set: mergedMoodFlat },
-    opening_hours: USE_FEATURES_FALLBACK ? undefined : opening_hours,
-    updated_at: new Date(),
+    keywords: { set: mergedKeywords || [] },
+    features: featuresJson,
+    features_flat: { set: mergedMoodFlat || [] },
+    ...(coords.place_id ? { google_place_id: coords.place_id } : {}),
   };
+
   const createPayload = {
     location_name: name,
     address,
-    latitude:  coords.lat,
-    longitude: coords.lng,
+    latitude: latStr,
+    longitude: lngStr,
     category: "옷",
     is_solo_friendly: true,
-    description: desc || null,
-    keywords: mergedKeywords,      // 초기 생성도 동일 정책
-    features: featuresFinal,
-    features_flat: mergedMoodFlat,
-    opening_hours: USE_FEATURES_FALLBACK ? undefined : opening_hours,
+    keywords: mergedKeywords || [],
+    features: featuresJson,
+    features_flat: mergedMoodFlat || [],
+    ...(coords.place_id ? { google_place_id: coords.place_id } : {}),
     dedupe_signature,
-    created_at: new Date(),
-    updated_at: new Date(),
   };
 
   const loc = await prisma.location.upsert({
@@ -426,154 +567,79 @@ async function upsertLocation(item, catLabel) {
   });
 
   console.log(
-    `[upsert] ${name} (${address || "no-addr"}) → id=${loc.location_id}` +
-    ` | lat=${loc.latitude ?? "null"}, lng=${loc.longitude ?? "null"}` +
-    ` | moods=[${mergedMoodFlat.join(", ")}]` +
-    ` | keywords=[${mergedKeywords.join(", ")}]` +
-    (opening_hours ? " | hours✅" : " | hours✖")
+    `[upsert] ${name} (${address || "no-addr"}) → id=${loc.location_id}\n` +
+      ` | lat=${loc.latitude ?? "null"}, lng=${loc.longitude ?? "null"}\n` +
+      ` | moods=[${mergedMoodFlat.join(", ")}]\n` +
+      ` | keywords=[${mergedKeywords.join(", ")}]`
   );
+
   return loc;
 }
 
-// =================== 바리에이션 생성 (확장판) ===================
+// =================== 쿼리 조합 (넓게) ===================
 function composeRegionCombos() {
   const base = new Set();
   const push = (s) => base.add(canon(s));
 
-  // 단일
+  // 단일 지역 토큰
   [...REGION_ALIASES, ...SUBAREAS, ...STATIONS, ...LANDMARKS].forEach(push);
 
-  // alias × (동|역|랜드마크) — 상한 가드
+  // alias × (동/역/랜드마크)
   for (const a of REGION_ALIASES) {
     for (const b of [...SUBAREAS, ...STATIONS, ...LANDMARKS]) {
       push(`${a} ${b}`);
-      if (base.size > 2000) break;
+      if (base.size > 4000) break;
     }
   }
 
-  // 인접 구 교차 + 대표 포인트 결합 — 상한 가드
+  // 인접 구 교차
   for (const adj of ADJACENT_DISTRICTS) {
-    push(`${adj} 인근`);
+    push(`${adj}`);
     for (const b of [...STATIONS, ...LANDMARKS]) {
       push(`${adj} ${b}`);
-      if (base.size > 3000) break;
-    }
-  }
-
-  // 관용 표현 — 상한 가드
-  const vicinity = ["근처", "주변", "인근", "부근", "역세권", "역 근처", "로데오"];
-  for (const r of [...base]) {
-    for (const v of vicinity) {
-      push(`${r} ${v}`);
-      if (base.size > 5000) break;
+      if (base.size > 6000) break;
     }
   }
 
   return Array.from(base);
 }
-function composeModifierCombos() {
-  const pool = [
-    ...INTENT_MODIFIERS, ...MOOD_MODIFIERS, ...SHOPPING_MODIFIERS, ...TARGET_POLICY,
-  ].map(canon);
-  const uniq = Array.from(new Set(pool));
-  const out = new Set();
 
-  // 단일
-  uniq.forEach(m => out.add(m));
-
-  // 2콤보 — 상한 가드
-  if (USE_COMBO_2) {
-    for (const c of kCombinations(uniq, 2)) {
-      out.add(canon(c.join(" ")));
-      if (out.size > 1200) break;
-    }
-  }
-
-  // 3콤보 — 상한 가드
-  if (USE_COMBO_3) {
-    let cnt = 0;
-    for (const c of kCombinations(uniq, 3)) {
-      out.add(canon(c.join(" ")));
-      if (++cnt >= MAX_3_COMBOS) break;
-    }
-  }
-  return Array.from(out);
-}
 function composeCategoryVariants(cat) {
   const syns = CATEGORY_SYNONYMS[cat] || [cat];
   const set = new Set();
-
-  // 단일 + 해시태그
-  syns.forEach(s => { set.add(canon(s)); set.add(canon(`#${s}`)); });
-
-  // 2콤보(해시태그 병행)
-  for (const comb of kCombinations(syns, 2)) {
-    const j = canon(comb.join(" "));
-    set.add(j);
-    set.add(canon(`#${comb[0]} #${comb[1]}`));
-  }
-
-  // 3콤보 일부
-  if (syns.length >= 3) {
-    for (const comb of kCombinations(syns, 3).slice(0, 120)) {
-      set.add(canon(comb.join(" ")));
-    }
-  }
+  syns.forEach((s) => set.add(canon(s))); // 해시태그/수식어 없음
   return Array.from(set);
 }
 
-const CAP = { q: MAX_QUERIES_PER_CATEGORY }; // 합성 조기 종료 상한
+const CAP = { q: MAX_QUERIES_PER_CATEGORY };
 
 function composeQueriesForCategory(cat) {
   console.time("compose");
-
   const regionCombos = composeRegionCombos();
-  const modifiers    = composeModifierCombos();
-  const catVariants  = composeCategoryVariants(cat);
+  const catVariants = composeCategoryVariants(cat);
 
   const queries = new Set();
 
-  outer:
-  for (const region of regionCombos) {
+  outer: for (const region of regionCombos) {
     for (const category of catVariants) {
-      const categoryPlain = category.replace(/^#/, "");
-
       for (const tmpl of QUERY_TEMPLATES) {
-        // 0) 수식어 없이
-        queries.add(canon(
-          tmpl.replace("{region}", region).replace("{category}", categoryPlain).replace("{modifier}", "")
-        ));
+        queries.add(
+          canon(
+            tmpl.replace("{region}", region).replace("{category}", category)
+          )
+        );
         if (queries.size >= CAP.q) break outer;
-
-        // 1) 해시태그 카테고리 직접 결합
-        if (/#/.test(category)) {
-          queries.add(canon(`${region} ${category}`));
-          if (queries.size >= CAP.q) break outer;
-        }
-
-        // 2) 수식어 적용
-        for (const m of modifiers) {
-          queries.add(canon(
-            tmpl.replace("{region}", region).replace("{category}", categoryPlain).replace("{modifier}", m)
-          ));
-          if (queries.size >= CAP.q) break outer;
-
-          // 해시태그 확장
-          if (!/#/.test(category)) {
-            const hashMod = `#${m.replace(/\s+/g, "")}`;
-            const hashCat = `#${categoryPlain.replace(/\s+/g, "")}`;
-            queries.add(canon(`${region} ${hashMod} ${hashCat}`));
-            if (queries.size >= CAP.q) break outer;
-          }
-        }
       }
     }
   }
 
   const list = Array.from(queries);
-  // 가벼운 셔플(결정적)
+
+  // 가벼운 셔플(의사 난수)
   for (let i = list.length - 1; i > 0; i--) {
-    const j = Math.floor((Math.sin(i * 9301 + 49297) % 1 + 1) % 1 * (i + 1));
+    const j = Math.floor(
+      (((Math.sin(i * 9301 + 49297) % 1) + 1) % 1) * (i + 1)
+    );
     [list[i], list[j]] = [list[j], list[i]];
   }
 
@@ -584,18 +650,21 @@ function composeQueriesForCategory(cat) {
 // =================== 실행 루프 ===================
 async function runCategory(cat) {
   const queries = composeQueriesForCategory(cat);
-  console.log(`\n=== RUN: ${REGION_CANON} × ${cat} | queries=${queries.length} (cap=${MAX_QUERIES_PER_CATEGORY}) ===`);
+  console.log(
+    `\n=== RUN: ${REGION_CANON} × ${cat} | queries=${queries.length} (cap=${MAX_QUERIES_PER_CATEGORY}) ===`
+  );
 
   let upserts = 0;
   const seenSig = new Set();
 
   for (let qi = 0; qi < queries.length; qi++) {
     const q = queries[qi];
-    console.log(`[fetch] (${qi+1}/${queries.length}) q="${q}"`);
+    console.log(`[fetch] (${qi + 1}/${queries.length}) q="${q}"`);
 
     for (let page = 0; page < MAX_PAGES_PER_QUERY; page++) {
       const start = 1 + page * DISPLAY;
-      console.log(`[fetch] page=${page+1}/${MAX_PAGES_PER_QUERY}, start=${start}`);
+      console.log(`[fetch] page=${page + 1}/${MAX_PAGES_PER_QUERY}, start=${start}`);
+
       const items = await fetchLocal(q, start);
       if (!items.length) break;
 
@@ -612,18 +681,21 @@ async function runCategory(cat) {
         upserts++;
         await sleep(BASE_DELAY_MS);
       }
+
       if (upserts >= MAX_ITEMS_PER_CATEGORY) break;
     }
+
     if (upserts >= MAX_ITEMS_PER_CATEGORY) break;
   }
 
-  console.log(`[DONE] ${REGION_CANON} × ${cat} → inserted/updated ≈ ${upserts} (unique)`);
+  console.log(
+    `[DONE] ${REGION_CANON} × ${cat} → inserted/updated ≈ ${upserts} (unique)`
+  );
 }
 
 // =================== main ===================
 (async () => {
   try {
-    // 워밍업 핑: 키/네트워크 즉시 확인
     console.log("[warmup] naver local ping...");
     try {
       const ping = await axios.get(NAVER_LOCAL_URL, {
@@ -631,7 +703,10 @@ async function runCategory(cat) {
         params: { query: "영통 옷", display: 1, start: 1 },
         timeout: 5000,
       });
-      console.log("[warmup] ok. items:", Array.isArray(ping.data?.items) ? ping.data.items.length : 0);
+      console.log(
+        "[warmup] ok. items:",
+        Array.isArray(ping.data?.items) ? ping.data.items.length : 0
+      );
     } catch (e) {
       console.error("[warmup] fail:", e?.response?.status, e?.message);
     }

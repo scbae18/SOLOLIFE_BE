@@ -1,6 +1,15 @@
 // src/services/weather.service.js
 import axios from 'axios';
+import https from 'https';   // ✅ 추가
+import dns from 'dns';       // ✅ 추가
 import { ApiError } from '../lib/ApiError.js';
+
+// ✅ IPv4 전용 httpsAgent (EC2는 IPv6 egress가 없을 수 있음)
+const httpsAgentIPv4 = new https.Agent({
+  keepAlive: true,
+  lookup: (hostname, opts, cb) =>
+    dns.lookup(hostname, { family: 4, all: false }, cb),
+});
 
 function mapWeatherCodeToBrief(wmo) {
   const SUNNY = { code: 'SUNNY', label: '화창' };
@@ -33,7 +42,12 @@ export async function getBriefWeatherByLatLng(lat, lng) {
 
   let data;
   try {
-    const res = await axios.get(url, { params, timeout: 12000, headers: { 'User-Agent': 'SOLOLIFE_BE/1.0' } });
+    const res = await axios.get(url, {
+      params,
+      timeout: 12000,
+      headers: { 'User-Agent': 'SOLOLIFE_BE/1.0' },
+      httpsAgent: httpsAgentIPv4, // ✅ 핵심 한 줄
+    });
     data = res.data;
   } catch (e) {
     const status = e.response?.status ?? 502;

@@ -2,14 +2,14 @@
 import "dotenv/config";
 import axios from "axios";
 import crypto from "crypto";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, Prisma } from "@prisma/client";
 
 /**
  * 음식점(영통권) 크롤러 확장판 - 좌표만 사용 / description 제외
- * - 키워드: "1인석"만 저장 (오마카세 전면 제외)
+ * - 키워드: "1인석"만 저장
  * - 지역 바리에이션/수식어/해시태그 확장, Naver Local 페이지네이션 + 스니펫 보강
  * - Google TextSearch → { place_id, lat, lng }만 사용
- * - description / opening_hours / types / price_level 전부 저장하지 않음
+ * - description / opening_hours / types / price_level 저장하지 않음
  */
 
 const prisma = new PrismaClient();
@@ -49,7 +49,6 @@ const CATEGORY_SYNONYMS = {
     "국밥", "설렁탕", "곰탕", "순대국", "냉면",
     "탕", "전골", "샤브샤브", "쭈꾸미", "해물", "회",
     "족발", "보쌈", "찜닭", "칼국수", "스테이크", "버거", "치킨",
-    // 오마카세류는 후처리로 제외
   ],
 };
 
@@ -101,7 +100,7 @@ const DISPLAY = 30;
 const MAX_PAGES_PER_QUERY = 4;
 const MAX_QUERIES_PER_CATEGORY = 180;
 const MAX_ITEMS_PER_CATEGORY   = 400;
-const BASE_DELAY_MS = 140;
+const BASE_DELAY_MS = 220; // RPS 완화
 
 const USE_COMBO_2 = true;
 const USE_COMBO_3 = true;
@@ -155,6 +154,11 @@ function normalizeText(s = "") {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function toDecimalString6(v) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return null;
+  return Number(v).toFixed(6); // Prisma Decimal과 호환되는 문자열
 }
 
 // 쿼리 정규화/중복 억제
@@ -251,13 +255,17 @@ const SNIPPET_CACHE = new Map();
 
 // =================== 외부 API ===================
 async function fetchLocal(query, start = 1) {
-  const { data } = await withRetry(() =>
-    axios.get(NAVER_LOCAL_URL, {
-      headers: localHeaders,
-      params: { query, display: DISPLAY, start, sort: "random" },
-      timeout: 8000,
-    })
-  );
+  const fn = () => axios.get(NAVER_LOCAL_URL, {
+    headers: localHeaders,
+    params: { query, display: DISPLAY, start, sort: "random" },
+    timeout: 8000,
+    validateStatus: s => (s >= 200 && s < 300) || s === 429
+  });
+  const { data, status } = await withRetry(async () => {
+    const res = await fn();
+    if (res.status === 429) throw new Error("NAVER_RATE_LIMIT");
+    return res;
+  }, 5, 600);
   return data.items || [];
 }
 async function fetchBlogSnippetsStrong({ name, region, category }) {
@@ -296,31 +304,46 @@ async function fetchWebSnippets(query, display=20) {
   return merged;
 }
 
-// Google: TextSearch → place_id, lat, lng (ONLY)
+// Google: TextSearch → place_id, lat, lng (ONLY) + 메모이제이션/백오프
+const GOOGLE_TEXT_CACHE = new Map();
 async function searchPlaceByText(name, address) {
   if (!GOOGLE_MAPS_API_KEY) return null;
   const qPrimary = address ? `${name} ${address}` : `${name} ${REGION_CANON}`;
   const qFallback = `${name} ${REGION_CANON}`;
-  const tryQuery = async (q) => {
-    const params = { query: q, key: GOOGLE_MAPS_API_KEY, language: "ko" };
-    const { data } = await withRetry(() => axios.get(GOOGLE_PLACES_TEXT, { params, timeout: 8000 }));
-    const res = data?.results?.[0];
-    if (!res) return null;
-    return { place_id: res.place_id ?? null, lat: res.geometry?.location?.lat ?? null, lng: res.geometry?.location?.lng ?? null };
-  };
-  let found = await tryQuery(qPrimary);
-  if (!found) found = await tryQuery(qFallback);
-  return found;
+  const keys = [qPrimary, qFallback];
+
+  for (const q of keys) {
+    if (GOOGLE_TEXT_CACHE.has(q)) return GOOGLE_TEXT_CACHE.get(q);
+    try {
+      const params = { query: q, key: GOOGLE_MAPS_API_KEY, language: "ko" };
+      const { data } = await withRetry(async () => {
+        const res = await axios.get(GOOGLE_PLACES_TEXT, { params, timeout: 8000 });
+        if (res?.data?.status === "OVER_QUERY_LIMIT") {
+          throw new Error("OVER_QUERY_LIMIT");
+        }
+        return res;
+      }, 4, 800);
+
+      const r = data?.results?.[0];
+      const found = r
+        ? { place_id: r.place_id ?? null, lat: r.geometry?.location?.lat ?? null, lng: r.geometry?.location?.lng ?? null }
+        : null;
+      GOOGLE_TEXT_CACHE.set(q, found);
+      if (found) return found;
+    } catch (e) {
+      if (String(e?.message).includes("OVER_QUERY_LIMIT")) {
+        console.warn("[google:text] quota hit; backing off more");
+        await sleep(2000);
+        continue;
+      }
+      console.warn("[google:text] error", e?.message || e);
+    }
+  }
+  return null;
 }
 
 // =================== 업서트 ===================
 async function upsertLocation(item, catLabel) {
-  // 오마카세 방어
-  if (/오마카세/i.test(item.title) || /오마카세/i.test(item.description || "")) {
-    console.log(`[skip-omakase] ${stripHtml(item.title)}`);
-    return null;
-  }
-
   const name = stripHtml(item.title);
   const address = item.roadAddress || item.address || null;
   const desc = stripHtml(item.description || ""); // 추론용 텍스트로만 사용 (DB 저장 X)
@@ -362,35 +385,36 @@ async function upsertLocation(item, catLabel) {
     _debugSnippet: baseTextRaw.slice(0, 200),
   };
 
-  // 업서트 (description/영업시간 등 제외)
+  // Decimal 문자열 변환(신규 → 소수점 6 고정 / 기존 유지)
+  const latStr = coords.lat != null ? toDecimalString6(coords.lat) : (existing?.latitude ? String(existing.latitude) : null);
+  const lngStr = coords.lng != null ? toDecimalString6(coords.lng) : (existing?.longitude ? String(existing.longitude) : null);
+
   const updatePayload = {
     location_name: name,
     address,
-    latitude:  (coords.lat ?? existing?.latitude ?? null),
-    longitude: (coords.lng ?? existing?.longitude ?? null),
+    latitude:  latStr,
+    longitude: lngStr,
     category: "음식점",
-    // description: 제외 (기존 값 유지)
-    keywords: { set: mergedKeywords }, // ["1인석"]만
+    keywords: { set: mergedKeywords || [] },      // 배열 set
     features: featuresJson,
-    features_flat: { set: mergedMoodFlat },
+    features_flat: { set: mergedMoodFlat || [] }, // 배열 set
     ...(coords.place_id ? { google_place_id: coords.place_id } : {}),
-    updated_at: new Date(),
+    // updated_at: @updatedAt 자동
   };
   const createPayload = {
     location_name: name,
     address,
-    latitude:  coords.lat,
-    longitude: coords.lng,
+    latitude:  latStr,
+    longitude: lngStr,
     category: "음식점",
     is_solo_friendly: true,
-    // description: 제외 (NULL/기본값)
-    keywords: mergedKeywords,
+    // description: 제외
+    keywords: mergedKeywords || [],
     features: featuresJson,
-    features_flat: mergedMoodFlat,
+    features_flat: mergedMoodFlat || [],
     ...(coords.place_id ? { google_place_id: coords.place_id } : {}),
     dedupe_signature,
-    created_at: new Date(),
-    updated_at: new Date(),
+    // created_at: now() 기본
   };
 
   const loc = await prisma.location.upsert({
@@ -574,12 +598,6 @@ async function runCategory(cat) {
 
       for (const it of items) {
         if (upserts >= MAX_ITEMS_PER_CATEGORY) break;
-
-        // 오마카세 방어
-        if (/오마카세/i.test(it.title) || /오마카세/i.test(it.description || "")) {
-          console.log(`[skip-omakase] ${stripHtml(it.title)}`);
-          continue;
-        }
 
         const name = stripHtml(it.title);
         const address = it.roadAddress || it.address || "";

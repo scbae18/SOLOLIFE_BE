@@ -1,104 +1,84 @@
+// crawl_restaurants_wide_coverage.js
 import "dotenv/config";
 import axios from "axios";
 import crypto from "crypto";
-import { PrismaClient } from "@prisma/client";
-
-console.log("[boot]", { node: process.version, cwd: process.cwd(), hasEnv: !!process.env.NAVER_OPENAPI_CLIENT_ID, hasPrisma: !!process.env.DATABASE_URL });
-const DRY_RUN = process.env.DRY_RUN === "1";
-if (DRY_RUN) { const q = composeQueriesForCategory((CATEGORY_KEYWORDS && CATEGORY_KEYWORDS[0]) || "음식점"); console.log("[dry-run] queries=", q.length, q.slice(0, 50)); process.exit(0); }
+import { PrismaClient, Prisma } from "@prisma/client";
 
 /**
- * 최대 바리에이션(중복 억제 강화) 음식점 수집기
- * - Google: TextSearch로 위도/경도만 사용 (place_id / opening_hours 전면 제거)
+ * 음식점(영통권) 크롤러 - 최대 커버리지 버전
+ * - 지역 × 카테고리(동의어)만 사용하여 가장 넓게 탐색
+ * - 수식어/해시태그 콤보 전부 제거
+ * - Google TextSearch로 { place_id, lat, lng }만 사용 (가능 시)
+ * - description/opening_hours/price/rating/photo는 저장하지 않음
  */
 
 const prisma = new PrismaClient();
 
+// =================== 지역 설정 ===================
 const REGION_CANON = "경기도 수원시 영통구";
-
-// (1) 지역 바리에이션
 const REGION_ALIASES = [
   "경기도 수원시 영통구", "수원시 영통구", "수원 영통구", "영통구",
 ];
-const SUBAREAS = ["영통동", "망포동", "매탄동", "원천동"];
-const STATIONS = ["영통역", "망포역", "청명역", "매탄권선역"];
+const SUBAREAS = [
+  "영통동", "망포동", "매탄동", "원천동",
+  "이의동", "하동", "상현동", "우만동", "권선동", "매교동",
+];
+const STATIONS = [
+  "영통역", "망포역", "청명역", "매탄권선역",
+  "광교중앙역", "광교역",
+];
 const LANDMARKS = [
-  "경희대학교 국제캠퍼스", "광교호수공원", "영통롯데마트", "망포홈플러스", "갤러리아광교"
+  "경희대학교 국제캠퍼스", "광교호수공원", "영통롯데마트",
+  "망포홈플러스", "갤러리아광교", "수원컨벤션센터",
+  "광교아울렛", "광교로데오", "영통로데오", "영통사거리",
+];
+const ADJACENT_DISTRICTS = [
+  "수원시 장안구", "수원시 팔달구", "수원시 권선구", "용인시 수지구", "용인시 기흥구",
 ];
 
-// (2) 카테고리/동의어/세부요리
+// =================== 카테고리(동의어) ===================
 const CATEGORY_KEYWORDS = ["음식점"];
 const CATEGORY_SYNONYMS = {
   음식점: [
-    "맛집", "식당", "레스토랑", "밥집",
-    "한식", "중식", "일식", "양식", "분식",
-    "라멘", "우동", "초밥", "덮밥", "한우", "삼겹살",
-    "국밥", "설렁탕", "곰탕", "순대국", "냉면",
-    "파스타", "스테이크", "피자", "버거", "치킨",
-    "곱창", "막창", "전골", "샤브샤브", "쭈꾸미",
-    "해물", "회", "족발", "보쌈", "찜닭", "칼국수",
+    // 넓은 상위 개념
+    "맛집", "음식점", "식당", "레스토랑", "밥집",
+    // 한식/면/밥
+    "한식", "국밥", "설렁탕", "곰탕", "순대국", "냉면", "칼국수", "비빔밥",
+    // 분식/면류
+    "분식", "라멘", "우동", "소바", "쫄면", "짜장면", "짬뽕",
+    // 중식/일식/양식
+    "중식", "중국집", "일식", "스시", "초밥", "덮밥", "돈카츠", "규카츠",
+    "양식", "파스타", "피자", "스테이크", "버거",
+    // 고기/해물
+    "고깃집", "삼겹살", "한우", "생선구이", "해물", "회", "전골", "샤브샤브",
+    "쭈꾸미", "족발", "보쌈", "찜닭",
+    // 치킨/분점류
+    "치킨", "호프", "술집", "포차", "이자카야", "막걸리",
+    // 베이커리/카페(겸업 식사처 잡히는 경우 확대용)
+    "베이커리", "빵집", "브런치", "카페",
   ],
 };
 
-// (3) 수식어 버킷
-const INTENT_MODIFIERS = [
-  "인기", "추천", "베스트", "핫플", "로컬", "줄서는", "줄안서는"
-];
-const MOOD_MODIFIERS = [
-  "가성비 좋은", "분위기 좋은", "깔끔한", "넓은"
-];
-const SOLO_MODIFIERS = ["혼밥", "1인", "바좌석", "혼자 가기 좋은"];
-const GROUP_MODIFIERS = ["회식", "단체석", "모임", "가족모임", "룸", "프라이빗"];
-const DIET_MODIFIERS = ["비건", "채식", "할랄", "글루텐프리", "저염"];
-const SERVICE_MODIFIERS = ["예약", "배달", "포장", "주차", "야식", "브레이크타임"];
-const TIME_MODIFIERS = ["아침", "점심", "런치", "브런치", "저녁", "디너", "야식"];
-const PRICE_MODIFIERS = ["저렴한", "가성비", "합리적", "고급", "코스"];
-
-// (4) 템플릿
+// =================== 쿼리 템플릿 (심플 & 넓게) ===================
 const QUERY_TEMPLATES = [
   "{region} {category}",
-  "{region} {modifier} {category}",
-  "{region} {category} 메뉴",
-  "{region} {category} 가격",
-  "{region} {category} 후기",
-  "{region} {category} 리뷰",
-  "{region} {category} 블로그",
-  "{region} {modifier} {category} 후기",
-  "{region} {modifier} {category} 리뷰",
-  "{region} {modifier} {category} 블로그",
-  "{region} {category} 웨이팅",
-  "{region} {category} 예약",
-  "{region} {category} 포장",
-  "{region} {category} 배달",
-  "{region} {category} 야식",
-  "{region} {category} 브런치",
-  "{region} {category} 점심",
-  "{region} {category} 저녁",
-  "{region} #{category}",
-  "{region} #{modifier} #{category}",
+  "{region} {category} 맛집",
+  "{region} {category} 식당",
 ];
 
-// 네이버 지역검색 파라미터
-const DISPLAY = 30;
-const MAX_PAGES_PER_QUERY = 4;
+// ===== 상한/페이지/속도 =====
+const DISPLAY = 30;                    // Naver Local: 페이지당 최대 30
+const MAX_PAGES_PER_QUERY = 10;        // 쿼리당 최대 300건
+const MAX_QUERIES_PER_CATEGORY = 500;  // 카테고리당 쿼리 500개
+const MAX_ITEMS_PER_CATEGORY   = 2000; // 실제 upsert 최대치
+const BASE_DELAY_MS = 220;             // RPS 완화(너무 줄이면 429 위험)
 
-// 상한
-const MAX_QUERIES_PER_CATEGORY = 180;
-const MAX_ITEMS_PER_CATEGORY = 400;
-
-// 딜레이
-const BASE_DELAY_MS = 140;
-
-// opening_hours 컬럼 폴백 (사용 안 함)
-const USE_FEATURES_FALLBACK = false;
-
-// =================== 외부 API URL ===================
+// =================== API URL/ENV ===================
 const NAVER_LOCAL_URL       = "https://openapi.naver.com/v1/search/local.json";
 const NAVER_BLOG_URL        = "https://openapi.naver.com/v1/search/blog.json";
 const NAVER_WEB_URL         = "https://openapi.naver.com/v1/search/webkr.json";
 const GOOGLE_PLACES_TEXT    = "https://maps.googleapis.com/maps/api/place/textsearch/json";
 
-// =================== env ===================
 const {
   NAVER_OPENAPI_CLIENT_ID,
   NAVER_OPENAPI_CLIENT_SECRET,
@@ -118,140 +98,146 @@ const localHeaders = {
   Accept: "application/json",
 };
 
-// =================== 유틸 ===================
+// =================== 유틸/정규화 ===================
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function withRetry(fn, tries = 3, delay = 400) {
   let last;
   for (let i = 0; i < tries; i++) {
     try { return await fn(); }
     catch (e) {
-      if (e.response) console.error("[HTTP ERROR]", e.response.status, e.response.data);
-      else console.error("[HTTP ERROR]", e.message);
+      console.error("[HTTP ERROR try", i+1, "]", e?.response?.status, e?.message);
       last = e; await sleep(delay * (i + 1));
     }
   }
   throw last;
 }
-
 const stripHtml = (s = "") => s.replace(/<[^>]*>/g, " ").trim();
-function normalizeQuery(q = "") {
-  return q
-    .replace(/[^\p{L}\p{N}\s#]/gu, " ")
+
+function normalizeText(s = "") {
+  return s.replace(/<[^>]*>/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/\s+#/g, " #")
-    .replace(/#{2,}/g, "#")
-    .replace(/\s{2,}/g, " ");
+    .toLowerCase();
+}
+function toDecimalString6(v) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return null;
+  return Number(v).toFixed(6);
 }
 
-/** 토큰 단위 중복 제거 + 불용어 제거 */
+// 쿼리 정규화/중복 억제
 const STOPWORDS = new Set(["에서", "근처", "근방", "주변", "인근", "부근", "역근처", "역", "맛"]);
+function normalizeQuery(q = "") {
+  return q
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\s{2,}/g, " ");
+}
 function dedupeTokens(q) {
   const toks = q.split(/\s+/).filter(Boolean);
   const seen = new Set();
   const out = [];
   for (let t of toks) {
-    if (/^#/.test(t)) t = t.toLowerCase();
     if (STOPWORDS.has(t)) continue;
     if (seen.has(t)) continue;
-    seen.add(t);
-    out.push(t);
+    seen.add(t); out.push(t);
   }
   return out.filter((t, i) => i === 0 || t !== out[i - 1]).join(" ");
 }
+const canon = (q) => dedupeTokens(normalizeQuery(q));
 
-function canon(q) { return dedupeTokens(normalizeQuery(q)); }
+const makeDedupeSig = ({ name, address }) =>
+  crypto.createHash("sha256")
+    .update(`${(name || "").toLowerCase()}|${(address || "").toLowerCase()}`)
+    .digest("hex").slice(0, 32);
 
-function uniquePush(arr, value) { const v = canon(value); if (v && !arr.includes(v)) arr.push(v); }
-
-/** 배열에서 k-콤비네이션(순서 무시) 생성 */
 function kCombinations(arr, k) {
   const res = [];
-  (function backtrack(start, path) {
+  (function bt(start, path) {
     if (path.length === k) { res.push(path.slice()); return; }
-    for (let i = start; i < arr.length; i++) {
-      path.push(arr[i]); backtrack(i + 1, path); path.pop();
-    }
+    for (let i = start; i < arr.length; i++) { path.push(arr[i]); bt(i + 1, path); path.pop(); }
   })(0, []);
   return res;
 }
 
-// =================== 간단 추론기 (기존 로직 유지)
-const MOOD_LEX = {
-  solo: [/혼밥/, /1인/, /바좌석/, /혼자\s?가기\s?좋/],
-  group: [/단체석/, /회식/, /모임/, /가족모임/, /룸/],
-  clean: [/깔끔/, /청결/, /위생/],
-  value: [/가성비/, /합리적/, /저렴/],
-  spicy: [/매콤/, /매운맛/],
-  queue: [/웨이팅/, /대기줄/],
-  late: [/야식/, /24\s?시간/, /새벽/],
+// =================== 허용 태그/규칙 (키워드/무드 저장은 유지) ===================
+const ALLOWED_MOOD_FEATURES = [
+  "사람많은", "한적한", "넓은", "아늑한", "조용한", "활기찬", "밝은", "어두운",
+];
+const ALLOWED_KEYWORDS = ["1인석"];
+
+const MOOD_RULES = {
+  사람많은: [/사람\s*많/, /붐비/, /북적/, /바글/, /혼잡/, /웨이팅/, /줄\s*길/],
+  한적한: [/한적/, /한산/, /널널/, /조용조용/, /사람\s*없/, /여유로/],
+  넓은: [/넓/, /좌석\s*많/, /자리\s*여유/, /공간\s*넉넉/, /층고\s*높/],
+  아늑한: [/아늑/, /포근/, /따뜻한\s*분위기/, /코지/, /감성\s*인테리어/],
+  조용한: [/조용/, /소음\s*낮/, /시끄럽지\s*않/, /차분/, /고요/, /잔잔/],
+  활기찬: [/활기/, /에너지/, /신나는/, /생기/, /북적/],
+  밝은: [/밝/, /채광\s*좋/, /햇살\s*좋/, /창가/, /환해/],
+  어두운: [/어둡/, /무드등/, /은은한\s*조명/, /저조도/],
 };
-const FEATURE_LEX = {
-  delivery: [/배달/, /요기요/, /배민/],
-  takeout: [/포장/, /테이크아웃/],
-  parking: [/주차/, /발렛/, /주차장/],
-  reserve: [/예약/, /네이버\s?예약/],
-  kids: [/아이\s?동반/, /유아\s?의자/],
-  room: [/룸/, /프라이빗/, /별실/],
-  alcohol: [/술집/, /맥주/, /사케/, /와인/],
-  vegan: [/비건/, /채식/],
-  halal: [/할랄/],
-  glutenfree: [/글루텐\s?프리/],
-};
-function countHits(regexList, t) { let c = 0; for (const r of regexList) if (r.test(t)) c++; return c; }
-function normalizeText(s = "") {
-  return s.replace(/<[^>]*>/g, " ").replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim().toLowerCase();
+
+const ONESEAT_STRONG = [/1\s*인\s*석/, /일인석/, /카운터\s*석/, /바\s*(테이블|석)/];
+const ONESEAT_WEAK   = [/혼밥/, /혼자\s*(먹|가|가기\s*좋)/, /(자리|좌석)\s*여유/];
+const ONESEAT_NEG    = [/1\s*인\s*(분|세트|메뉴)/];
+
+const matchAny = (rules, text) => rules.some((r) => r.test(text));
+function inferMoodTags(textRaw) {
+  const t = normalizeText(textRaw);
+  const found = [];
+  for (const tag of ALLOWED_MOOD_FEATURES) {
+    const rules = MOOD_RULES[tag] || [];
+    if (matchAny(rules, t)) found.push(tag);
+  }
+  if (found.includes("조용한") && found.includes("사람많은")) {
+    const crowdStrong = matchAny([/웨이팅/, /줄\s*길/, /북적/, /붐비/], t);
+    return crowdStrong ? found.filter((x) => x !== "조용한") : found.filter((x) => x !== "사람많은");
+  }
+  return Array.from(new Set(found));
 }
-function inferKeywords(text) {
-  const t = normalizeText(text);
-  const scores = {
-    혼밥: countHits(MOOD_LEX.solo, t),
-    단체모임: countHits(MOOD_LEX.group, t),
-    깔끔함: countHits(MOOD_LEX.clean, t),
-    가성비: countHits(MOOD_LEX.value, t),
-    매운맛: countHits(MOOD_LEX.spicy, t),
-    웨이팅많음: countHits(MOOD_LEX.queue, t),
-    야식가능: countHits(MOOD_LEX.late, t),
-  };
-  return Object.entries(scores).filter(([, v]) => v >= 1).sort((a,b)=>b[1]-a[1]).map(([k])=>k);
+function isOneSeat(text) {
+  const t = normalizeText(text || "");
+  if (ONESEAT_NEG.some((r) => r.test(t))) return false;
+  let score = 0;
+  if (ONESEAT_STRONG.some((r) => r.test(t))) score += 2;
+  const weakHits = ONESEAT_WEAK.reduce((acc, r) => acc + (r.test(t) ? 1 : 0), 0);
+  if (weakHits >= 2) score += 1;
+  return score >= 2;
 }
-function inferFeatures(text) {
-  const t = normalizeText(text);
-  const feats = {
-    delivery:   countHits(FEATURE_LEX.delivery, t)   >= 1 || undefined,
-    takeout:    countHits(FEATURE_LEX.takeout, t)    >= 1 || undefined,
-    parking:    countHits(FEATURE_LEX.parking, t)    >= 1 || undefined,
-    reserve:    countHits(FEATURE_LEX.reserve, t)    >= 1 || undefined,
-    kids:       countHits(FEATURE_LEX.kids, t)       >= 1 || undefined,
-    room:       countHits(FEATURE_LEX.room, t)       >= 1 || undefined,
-    alcohol:    countHits(FEATURE_LEX.alcohol, t)    >= 1 || undefined,
-    vegan:      countHits(FEATURE_LEX.vegan, t)      >= 1 || undefined,
-    halal:      countHits(FEATURE_LEX.halal, t)      >= 1 || undefined,
-    glutenfree: countHits(FEATURE_LEX.glutenfree, t) >= 1 || undefined,
-  };
-  if (countHits(MOOD_LEX.queue, t) >= 1) feats.queue = 1;
-  if (countHits(MOOD_LEX.late, t)  >= 1) feats.late  = 1;
-  return feats;
+function inferKeywordTagsStrict({ textRaw }) {
+  const out = [];
+  if (isOneSeat(textRaw)) out.push("1인석");
+  return Array.from(new Set(out));
 }
 
-// =================== 외부 API 호출
+// =================== 캐시 ===================
+const SNIPPET_CACHE = new Map();
+const GOOGLE_TEXT_CACHE = new Map();
+
+// =================== 외부 API ===================
 async function fetchLocal(query, start = 1) {
-  const { data } = await withRetry(() =>
-    axios.get(NAVER_LOCAL_URL, {
-      headers: localHeaders,
-      params: { query, display: DISPLAY, start, sort: "random" },
-      timeout: 8000,
-    })
-  );
+  const fn = () => axios.get(NAVER_LOCAL_URL, {
+    headers: localHeaders,
+    params: { query, display: DISPLAY, start, sort: "random" },
+    timeout: 8000,
+    validateStatus: s => (s >= 200 && s < 300) || s === 429
+  });
+  const { data } = await withRetry(async () => {
+    const res = await fn();
+    if (res.status === 429) throw new Error("NAVER_RATE_LIMIT");
+    return res;
+  }, 5, 600);
   return data.items || [];
 }
 async function fetchBlogSnippetsStrong({ name, region, category }) {
+  const key = `BLOG:${name}|${region}|${category||""}`;
+  if (SNIPPET_CACHE.has(key)) return SNIPPET_CACHE.get(key);
   const variants = [
     `${name} ${region} 후기 리뷰 ${category||""}`,
-    `${name} ${region} 메뉴 가격 ${category||""}`,
-    `${name} ${region} 웨이팅 대기 ${category||""}`,
-    `${name} ${region} 혼밥 1인 ${category||""}`,
-    `${name} ${region} 예약 포장 배달 ${category||""}`,
+    `${name} ${region} 1인석 혼밥 카운터석 ${category||""}`,
+    `${name} ${region} 분위기 인테리어 ${category||""}`,
+    `${name} ${region} ${category||""}`,
   ];
   let merged = "";
   for (const q of variants) {
@@ -261,110 +247,130 @@ async function fetchBlogSnippetsStrong({ name, region, category }) {
       );
       const items = data?.items || [];
       merged += " " + items.map(it => normalizeText(`${it.title} ${it.description}`)).join(" ");
-      await sleep(80);
+      await sleep(60);
     } catch {}
   }
-  return merged.trim();
+  merged = merged.trim();
+  SNIPPET_CACHE.set(key, merged);
+  return merged;
 }
 async function fetchWebSnippets(query, display=20) {
+  const key = `WEB:${query}|${display}`;
+  if (SNIPPET_CACHE.has(key)) return SNIPPET_CACHE.get(key);
   const { data } = await withRetry(() =>
     axios.get(NAVER_WEB_URL, { headers: localHeaders, params: { query, display: Math.min(display, 30) }, timeout: 8000 })
   );
   const items = data?.items || [];
-  return items.map(it => normalizeText(`${it.title} ${it.description}`)).join(" ");
+  const merged = items.map(it => normalizeText(`${it.title} ${it.description}`)).join(" ");
+  SNIPPET_CACHE.set(key, merged);
+  return merged;
 }
 
-// Google: TextSearch → lat/lng만 (place_id 사용/저장 안 함)
+// Google: TextSearch → place_id, lat, lng (ONLY) + 메모/백오프
 async function searchPlaceByText(name, address) {
-  if (!GOOGLE_MAPS_API_KEY) return { lat: null, lng: null };
-  const qPrimary  = address ? `${name} ${address}` : `${name} ${REGION_CANON}`;
+  if (!GOOGLE_MAPS_API_KEY) return null;
+  const qPrimary = address ? `${name} ${address}` : `${name} ${REGION_CANON}`;
   const qFallback = `${name} ${REGION_CANON}`;
-  const tryQuery = async (q) => {
-    const params = { query: q, key: GOOGLE_MAPS_API_KEY, language: "ko" };
-    const { data } = await withRetry(() => axios.get(GOOGLE_PLACES_TEXT, { params, timeout: 8000 }));
-    const res = data?.results?.[0];
-    if (!res) return null;
-    return {
-      lat: res.geometry?.location?.lat ?? null,
-      lng: res.geometry?.location?.lng ?? null,
-    };
-  };
-  let found = await tryQuery(qPrimary);
-  if (!found) found = await tryQuery(qFallback);
-  return found || { lat: null, lng: null };
+  const keys = [qPrimary, qFallback];
+
+  for (const q of keys) {
+    if (GOOGLE_TEXT_CACHE.has(q)) return GOOGLE_TEXT_CACHE.get(q);
+    try {
+      const params = { query: q, key: GOOGLE_MAPS_API_KEY, language: "ko" };
+      const { data } = await withRetry(async () => {
+        const res = await axios.get(GOOGLE_PLACES_TEXT, { params, timeout: 8000 });
+        if (res?.data?.status === "OVER_QUERY_LIMIT") {
+          throw new Error("OVER_QUERY_LIMIT");
+        }
+        return res;
+      }, 4, 800);
+
+      const r = data?.results?.[0];
+      const found = r
+        ? { place_id: r.place_id ?? null, lat: r.geometry?.location?.lat ?? null, lng: r.geometry?.location?.lng ?? null }
+        : null;
+      GOOGLE_TEXT_CACHE.set(q, found);
+      if (found) return found;
+    } catch (e) {
+      if (String(e?.message).includes("OVER_QUERY_LIMIT")) {
+        console.warn("[google:text] quota hit; backing off more");
+        await sleep(2000);
+        continue;
+      }
+      console.warn("[google:text] error", e?.message || e);
+    }
+  }
+  return null;
 }
 
-// =================== 업서트
+// =================== 업서트 ===================
 async function upsertLocation(item, catLabel) {
   const name = stripHtml(item.title);
   const address = item.roadAddress || item.address || null;
   const desc = stripHtml(item.description || "");
-  const dedupe_signature = crypto.createHash("sha256")
-    .update(`${(name || "").toLowerCase()}|${(address || "").toLowerCase()}`)
-    .digest("hex").slice(0, 32);
+  const dedupe_signature = makeDedupeSig({ name, address });
 
   const existing = await prisma.location.findUnique({ where: { dedupe_signature } });
 
+  // 텍스트 보강(무드/키워드 추론용)
   let extraText = await fetchBlogSnippetsStrong({ name, region: REGION_CANON, category: catLabel });
   if (!extraText || extraText.length < 50) {
-    const webFallback = await fetchWebSnippets(`${name} ${REGION_CANON} ${catLabel||""} 메뉴 가격 후기 웨이팅 예약 포장 배달`);
+    const webFallback = await fetchWebSnippets(
+      `${name} ${REGION_CANON} ${catLabel||""} 후기 리뷰 1인석 혼밥 카운터석 분위기 조용 웨이팅`
+    );
     extraText = `${extraText||""} ${webFallback||""}`.trim();
   }
-
   const baseTextRaw = `${name} ${desc} ${extraText||""} ${catLabel||""}`;
-  const baseText = normalizeText(baseTextRaw);
 
-  const inferredKeywords = inferKeywords(baseText);
-  const inferredFeatures = inferFeatures(baseText);
-
-  const prevKeywords = Array.isArray(existing?.keywords) ? existing.keywords : [];
-  const mergedKeywords = Array.from(new Set([...prevKeywords, ...inferredKeywords]));
-
-  const featuresFinal = {
-    ...(existing?.features || {}),
-    ...inferredFeatures,
-    _debugSnippet: baseTextRaw.slice(0, 200),
-  };
-
-  // Google: lat/lng만
-  let coords = { lat: null, lng: null };
+  // Google 좌표
+  let coords = { place_id: null, lat: null, lng: null };
   try {
     const found = await searchPlaceByText(name, address);
     if (found) coords = found;
-    console.log(`[google:text] ${name} → lat=${coords.lat}, lng=${coords.lng}`);
+    console.log(`[google:text] ${name} → pid=${coords.place_id || "none"}, lat=${coords.lat}, lng=${coords.lng}`);
   } catch (e) { console.warn("[google:text] error", e?.message || e); }
 
-  const soloHeuristic = /혼밥|1인|바좌석|혼자\s?가기\s?좋/.test(baseText);
+  // 태깅
+  const moodTags = inferMoodTags(baseTextRaw);
+  const keywordTags = inferKeywordTagsStrict({ textRaw: baseTextRaw }); // 현재는 "1인석"만
+
+  // 병합
+  const prevKeywords = Array.isArray(existing?.keywords) ? existing.keywords : [];
+  const mergedKeywords = Array.from(new Set([...prevKeywords, ...keywordTags].filter(k => ALLOWED_KEYWORDS.includes(k))));
+  const prevFeaturesFlat = Array.isArray(existing?.features_flat) ? existing.features_flat : [];
+  const mergedMoodFlat = Array.from(new Set([...prevFeaturesFlat, ...moodTags].filter(f => ALLOWED_MOOD_FEATURES.includes(f))));
+
+  const featuresJson = {
+    moods: mergedMoodFlat,
+    _debugSnippet: baseTextRaw.slice(0, 200),
+  };
+
+  const latStr = coords.lat != null ? toDecimalString6(coords.lat) : (existing?.latitude ? String(existing.latitude) : null);
+  const lngStr = coords.lng != null ? toDecimalString6(coords.lng) : (existing?.longitude ? String(existing.longitude) : null);
 
   const updatePayload = {
     location_name: name,
     address,
-    latitude:  (coords.lat ?? existing?.latitude ?? null),
-    longitude: (coords.lng ?? existing?.longitude ?? null),
-    category: catLabel,
-    description: desc || null,
-    keywords: { set: mergedKeywords },
-    features: featuresFinal,
-    is_solo_friendly: existing?.is_solo_friendly || soloHeuristic || true,
-    // google_place_id: 제거
-    // opening_hours: 제거
-    updated_at: new Date(),
+    latitude:  latStr,
+    longitude: lngStr,
+    category: "음식점",
+    keywords: { set: mergedKeywords || [] },
+    features: featuresJson,
+    features_flat: { set: mergedMoodFlat || [] },
+    ...(coords.place_id ? { google_place_id: coords.place_id } : {}),
   };
   const createPayload = {
     location_name: name,
     address,
-    latitude:  coords.lat,
-    longitude: coords.lng,
-    category: catLabel,
-    is_solo_friendly: soloHeuristic || true,
-    description: desc || null,
-    keywords: mergedKeywords,
-    features: featuresFinal,
+    latitude:  latStr,
+    longitude: lngStr,
+    category: "음식점",
+    is_solo_friendly: true,
+    keywords: mergedKeywords || [],
+    features: featuresJson,
+    features_flat: mergedMoodFlat || [],
+    ...(coords.place_id ? { google_place_id: coords.place_id } : {}),
     dedupe_signature,
-    created_at: new Date(),
-    updated_at: new Date(),
-    // google_place_id: 제거
-    // opening_hours: 제거
   };
 
   const loc = await prisma.location.upsert({
@@ -376,107 +382,79 @@ async function upsertLocation(item, catLabel) {
   console.log(
     `[upsert] ${name} (${address || "no-addr"}) → id=${loc.location_id}` +
     ` | lat=${loc.latitude ?? "null"}, lng=${loc.longitude ?? "null"}` +
+    ` | moods=[${mergedMoodFlat.join(", ")}]` +
     ` | keywords=[${mergedKeywords.join(", ")}]`
   );
   return loc;
 }
 
-// =================== 바리에이션 생성
+// =================== 쿼리 조합 (넓게) ===================
 function composeRegionCombos() {
   const base = new Set();
   const push = (s) => base.add(canon(s));
 
-  [...REGION_ALIASES, ...SUBAREAS, ...STATIONS, ...LANDMARKS].forEach(r => push(r));
+  // 단일 지역 토큰
+  [...REGION_ALIASES, ...SUBAREAS, ...STATIONS, ...LANDMARKS].forEach(push);
+
+  // alias × (동/역/랜드마크)
   for (const a of REGION_ALIASES) {
     for (const b of [...SUBAREAS, ...STATIONS, ...LANDMARKS]) {
       push(`${a} ${b}`);
+      if (base.size > 4000) break;
     }
   }
-  const vicinity = ["근처", "주변", "인근", "부근", "역 근처"];
-  for (const r of [...base]) {
-    for (const v of vicinity) push(`${r} ${v}`);
+
+  // 인접 구 교차
+  for (const adj of ADJACENT_DISTRICTS) {
+    push(`${adj}`);
+    for (const b of [...STATIONS, ...LANDMARKS]) {
+      push(`${adj} ${b}`);
+      if (base.size > 6000) break;
+    }
   }
+
   return Array.from(base);
-}
-
-function composeModifierCombos() {
-  const pool = [
-    ...INTENT_MODIFIERS,
-    ...MOOD_MODIFIERS,
-    ...SOLO_MODIFIERS,
-    ...GROUP_MODIFIERS,
-    ...DIET_MODIFIERS,
-    ...SERVICE_MODIFIERS,
-    ...TIME_MODIFIERS,
-    ...PRICE_MODIFIERS,
-  ];
-
-  const uniq = Array.from(new Set(pool.map(canon)));
-  const result = new Set();
-
-  uniq.forEach(m => result.add(m));
-  for (const comb of kCombinations(uniq, 2)) result.add(canon(comb.join(" ")));
-  const three = kCombinations(uniq, 3);
-  three.slice(0, 200).forEach(c => result.add(canon(c.join(" "))));
-  return Array.from(result);
 }
 
 function composeCategoryVariants(cat) {
   const syns = CATEGORY_SYNONYMS[cat] || [cat];
   const set = new Set();
-  syns.forEach(s => set.add(canon(s)));
-  for (const comb of kCombinations(syns, 2)) {
-    set.add(canon(comb.join(" ")));
-    set.add(canon(`#${comb[0]} #${comb[1]}`));
-  }
-  syns.forEach(s => set.add(canon(`#${s}`)));
+  syns.forEach(s => set.add(canon(s))); // 해시태그/수식어 없음
+  // 2·3콤보는 과한 특이성이 생길 수 있어 제외 (커버리지 우선)
   return Array.from(set);
 }
 
+const CAP = { q: MAX_QUERIES_PER_CATEGORY };
+
 function composeQueriesForCategory(cat) {
+  console.time("compose");
+
   const regionCombos = composeRegionCombos();
-  const modifiers = composeModifierCombos();
-  const catVariants = composeCategoryVariants(cat);
+  const catVariants  = composeCategoryVariants(cat);
 
   const queries = new Set();
 
+  outer:
   for (const region of regionCombos) {
     for (const category of catVariants) {
+      const categoryPlain = category;
       for (const tmpl of QUERY_TEMPLATES) {
-        const baseQ = canon(
-          tmpl.replace("{region}", region)
-              .replace("{category}", category.replace(/^#/, ""))
-              .replace("{modifier}", "")
-        );
-        queries.add(baseQ);
-
-        if (/#/.test(category)) {
-          const hashQ = canon(`${region} ${category}`);
-          queries.add(hashQ);
-        }
-
-        for (const m of modifiers) {
-          const q = canon(
-            tmpl.replace("{region}", region)
-                .replace("{category}", category.replace(/^#/, ""))
-                .replace("{modifier}", m)
-          );
-          queries.add(q);
-
-          if (!/#/.test(category)) {
-            const hashQ2 = canon(`${region} #${m.replace(/\s+/g, "")} #${category.replace(/\s+/g, "")}`);
-            queries.add(hashQ2);
-          }
-        }
+        queries.add(canon(
+          tmpl.replace("{region}", region).replace("{category}", categoryPlain)
+        ));
+        if (queries.size >= CAP.q) break outer;
       }
     }
   }
 
   const list = Array.from(queries);
+  // 가벼운 셔플
   for (let i = list.length - 1; i > 0; i--) {
     const j = Math.floor((Math.sin(i * 9301 + 49297) % 1 + 1) % 1 * (i + 1));
     [list[i], list[j]] = [list[j], list[i]];
   }
+
+  console.timeEnd("compose");
   return list.slice(0, MAX_QUERIES_PER_CATEGORY);
 }
 
@@ -488,19 +466,22 @@ async function runCategory(cat) {
   let upserts = 0;
   const seenSig = new Set();
 
-  for (const q of queries) {
+  for (let qi = 0; qi < queries.length; qi++) {
+    const q = queries[qi];
+    console.log(`[fetch] (${qi+1}/${queries.length}) q="${q}"`);
+
     for (let page = 0; page < MAX_PAGES_PER_QUERY; page++) {
       const start = 1 + page * DISPLAY;
+      console.log(`[fetch] page=${page+1}/${MAX_PAGES_PER_QUERY}, start=${start}`);
       const items = await fetchLocal(q, start);
       if (!items.length) break;
 
       for (const it of items) {
         if (upserts >= MAX_ITEMS_PER_CATEGORY) break;
+
         const name = stripHtml(it.title);
         const address = it.roadAddress || it.address || "";
-        const sig = crypto.createHash("sha256")
-          .update(`${(name || "").toLowerCase()}|${(address || "").toLowerCase()}`)
-          .digest("hex").slice(0, 32);
+        const sig = makeDedupeSig({ name, address });
         if (seenSig.has(sig)) continue;
         seenSig.add(sig);
 
@@ -519,7 +500,20 @@ async function runCategory(cat) {
 // =================== main ===================
 (async () => {
   try {
+    console.log("[warmup] naver local ping...");
+    try {
+      const ping = await axios.get(NAVER_LOCAL_URL, {
+        headers: localHeaders,
+        params: { query: "영통 맛집", display: 1, start: 1 },
+        timeout: 5000,
+      });
+      console.log("[warmup] ok. items:", Array.isArray(ping.data?.items) ? ping.data.items.length : 0);
+    } catch (e) {
+      console.error("[warmup] fail:", e?.response?.status, e?.message);
+    }
+
     for (const cat of CATEGORY_KEYWORDS) {
+      console.log(`[main] start category: ${cat}`);
       await runCategory(cat);
     }
   } catch (e) {

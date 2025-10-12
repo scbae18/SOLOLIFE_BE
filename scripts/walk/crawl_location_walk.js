@@ -1,15 +1,15 @@
-// crawl_bars_wide_coverage.js
+// crawl_walk_hike_wide_coverage.js
 import "dotenv/config";
 import axios from "axios";
 import crypto from "crypto";
 import { PrismaClient, Prisma } from "@prisma/client";
 
 /**
- * 술집(영통권) 크롤러 - 최대 커버리지 버전
- * - 지역 × 카테고리(동의어)만 사용하여 가장 넓게 탐색
+ * 산책/등산(영통권) 크롤러 - 최대 커버리지 버전
+ * - 지역 × 카테고리(동의어)만 사용하여 넓게 탐색
  * - feature(무드 태그) 로직은 그대로 유지
- * - category는 "술집"으로 저장
- * - keywords는 ["바", "이자카야"]만 저장(규칙 기반 추론)
+ * - category는 "산책/등산"으로 저장
+ * - keywords는 ["자전거도로가 있는"]만 저장(규칙 기반 추론)
  * - Google TextSearch로 { place_id, lat, lng }만 사용 (가능 시)
  * - description/opening_hours/price/rating/photo는 저장하지 않음
  */
@@ -39,25 +39,24 @@ const ADJACENT_DISTRICTS = [
 ];
 
 // =================== 카테고리(동의어) ===================
-const CATEGORY_KEYWORDS = ["술집"];
+const CATEGORY_KEYWORDS = ["산책/등산"];
 const CATEGORY_SYNONYMS = {
-  술집: [
+  "산책/등산": [
     // 상위/일반
-    "술집", "주점", "포차", "호프", "펍", "선술집", "라운지바",
-    // 타입
-    "바", "와인바", "칵테일바", "위스키바", "크래프트비어", "수제맥주", "맥주집", "사케바",
-    // 이자카야 계열
-    "이자카야", "사케", "오뎅바", "돈카츠 이자카야", "규카츠 이자카야",
-    // 이용 맥락(커버리지 확대용)
-    "회식", "2차", "루프탑 바", "야경 바", "조용한 바", "분위기 좋은 바",
+    "산책", "산책로", "산책 코스", "걷기 좋은 곳", "둘레길", "하천 산책", "호수공원 산책",
+    "등산", "등산로", "트레킹", "하이킹", "숲길", "도보 코스",
+    // 장소 타입
+    "공원 산책", "근린공원", "수변공원", "생태하천", "체육공원", "천변 산책",
+    // 이용 맥락(커버리지 확대)
+    "산책 추천", "등산 추천", "가벼운 산책", "주말 산책", "가을 단풍 산책", "야간 산책",
   ],
 };
 
-// =================== 쿼리 템플릿 (심플 & 넓게) ===================
+// =================== 쿼리 템플릿 (산책/등산용) ===================
 const QUERY_TEMPLATES = [
   "{region} {category}",
-  "{region} {category} 맛집",
-  "{region} {category} 술",
+  "{region} {category} 코스",
+  "{region} {category} 추천",
 ];
 
 // ===== 상한/페이지/속도 =====
@@ -151,10 +150,10 @@ const ALLOWED_MOOD_FEATURES = [
   "사람많은", "한적한", "넓은", "아늑한", "조용한", "활기찬", "밝은", "어두운",
 ];
 
-// 키워드: 바 / 이자카야
-const ALLOWED_KEYWORDS = ["바", "이자카야"];
+// 키워드: 자전거도로가 있는
+const ALLOWED_KEYWORDS = ["자전거도로가 있는"];
 
-// 무드 규칙
+// 무드 규칙 (유지)
 const MOOD_RULES = {
   사람많은: [/사람\s*많/, /붐비/, /북적/, /바글/, /혼잡/, /웨이팅/, /줄\s*길/],
   한적한: [/한적/, /한산/, /널널/, /조용조용/, /사람\s*없/, /여유로/],
@@ -166,56 +165,36 @@ const MOOD_RULES = {
   어두운: [/어둡/, /무드등/, /은은한\s*조명/, /저조도/],
 };
 
-// ====== 술집 키워드 추론 규칙 ======
-const BAR_STRONG = [
-  /칵테일\s*바/, /칵테일/, /위스키\s*바/, /위스키/, /하이볼/, /와인\s*바/, /라운지\s*바/,
-  /루프탑\s*바/, /바텐더/, /바\s*테이블/,
+// ====== 산책/등산 키워드 추론: "자전거도로가 있는" ======
+const BIKE_STRONG = [
+  /자전거\s*도로/, /자전거\s*전용도로/, /자전거길/, /라이딩\s*코스/, /MTB\s*코스/,
+  /자전거\s*트랙/, /자전거\s*전용\s*구간/, /자전거\s*도로\s*연결/, /자전거\s*도로\s*망/,
 ];
-const BAR_WEAK = [
-  /바\s/, /라운지/, /스피크이지/, /바무드/, /바음악/, /바분위기/, /바좌석/, /싱글몰트/,
-];
-
-const IZAKAYA_STRONG = [
-  /이자카야/, /사케\s*바/, /오뎅\s*바/, /사케/, /사시미/, /덴푸라/, /돈카츠\s*이자카야/, /규카츠\s*이자카야/,
-];
-const IZAKAYA_WEAK = [
-  /안주/, /모둠사시미/, /니혼슈/, /츠마미/, /타다키/, /오마카세\s*사시미/, /오차즈케/,
+const BIKE_WEAK = [
+  /자전거/, /라이딩/, /자출/, /자전거\s*대여/, /퍼스널모빌리티/, /따릉이/, /바이크/,
 ];
 
-// 1) 무드 태그 추론
-const matchAny = (rules, text) => rules.some((r) => r.test(text));
 function inferMoodTags(textRaw) {
   const t = normalizeText(textRaw);
   const found = [];
   for (const tag of ALLOWED_MOOD_FEATURES) {
     const rules = MOOD_RULES[tag] || [];
-    if (matchAny(rules, t)) found.push(tag);
+    if (rules.some((r) => r.test(t))) found.push(tag);
   }
   if (found.includes("조용한") && found.includes("사람많은")) {
-    const crowdStrong = matchAny([/웨이팅/, /줄\s*길/, /북적/, /붐비/], t);
+    const crowdStrong = [/웨이팅/, /줄\s*길/, /북적/, /붐비/].some((r) => r.test(normalizeText(textRaw)));
     return crowdStrong ? found.filter((x) => x !== "조용한") : found.filter((x) => x !== "사람많은");
   }
   return Array.from(new Set(found));
 }
 
-// 2) 키워드(바/이자카야) 추론 (점수 기반)
-function inferPubKeywordTags({ textRaw }) {
+function inferWalkKeywordTags({ textRaw }) {
   const t = normalizeText(textRaw || "");
-  const out = [];
-
-  let barScore = 0;
-  if (BAR_STRONG.some(r => r.test(t))) barScore += 2;
-  const barWeakHits = BAR_WEAK.reduce((acc, r) => acc + (r.test(t) ? 1 : 0), 0);
-  if (barWeakHits >= 2) barScore += 1;
-  if (barScore >= 2) out.push("바");
-
-  let izakayaScore = 0;
-  if (IZAKAYA_STRONG.some(r => r.test(t))) izakayaScore += 2;
-  const izakayaWeakHits = IZAKAYA_WEAK.reduce((acc, r) => acc + (r.test(t) ? 1 : 0), 0);
-  if (izakayaWeakHits >= 2) izakayaScore += 1;
-  if (izakayaScore >= 2) out.push("이자카야");
-
-  return Array.from(new Set(out));
+  let bikeScore = 0;
+  if (BIKE_STRONG.some(r => r.test(t))) bikeScore += 2;
+  const weakHits = BIKE_WEAK.reduce((acc, r) => acc + (r.test(t) ? 1 : 0), 0);
+  if (weakHits >= 2) bikeScore += 1;
+  return bikeScore >= 2 ? ["자전거도로가 있는"] : [];
 }
 
 // =================== 캐시 ===================
@@ -237,13 +216,14 @@ async function fetchLocal(query, start = 1) {
   }, 5, 600);
   return data.items || [];
 }
+
 async function fetchBlogSnippetsStrong({ name, region, category }) {
   const key = `BLOG:${name}|${region}|${category||""}`;
   if (SNIPPET_CACHE.has(key)) return SNIPPET_CACHE.get(key);
   const variants = [
-    `${name} ${region} 후기 리뷰 ${category||""}`,
-    `${name} ${region} 분위기 바 위스키 와인 칵테일 ${category||""}`,
-    `${name} ${region} 이자카야 사케 사시미 ${category||""}`,
+    `${name} ${region} ${category||""} 산책 등산 트레킹 하이킹 후기 리뷰`,
+    `${name} ${region} 둘레길 공원 하천 코스 ${category||""}`,
+    `${name} ${region} 자전거도로 자전거길 라이딩 ${category||""}`,
     `${name} ${region} ${category||""}`,
   ];
   let merged = "";
@@ -261,6 +241,7 @@ async function fetchBlogSnippetsStrong({ name, region, category }) {
   SNIPPET_CACHE.set(key, merged);
   return merged;
 }
+
 async function fetchWebSnippets(query, display=20) {
   const key = `WEB:${query}|${display}`;
   if (SNIPPET_CACHE.has(key)) return SNIPPET_CACHE.get(key);
@@ -273,7 +254,7 @@ async function fetchWebSnippets(query, display=20) {
   return merged;
 }
 
-// Google: TextSearch → place_id, lat, lng (ONLY) + 메모/백오프
+// Google: TextSearch → place_id, lat, lng (ONLY)
 async function searchPlaceByText(name, address) {
   if (!GOOGLE_MAPS_API_KEY) return null;
   const qPrimary = address ? `${name} ${address}` : `${name} ${REGION_CANON}`;
@@ -286,9 +267,7 @@ async function searchPlaceByText(name, address) {
       const params = { query: q, key: GOOGLE_MAPS_API_KEY, language: "ko" };
       const { data } = await withRetry(async () => {
         const res = await axios.get(GOOGLE_PLACES_TEXT, { params, timeout: 8000 });
-        if (res?.data?.status === "OVER_QUERY_LIMIT") {
-          throw new Error("OVER_QUERY_LIMIT");
-        }
+        if (res?.data?.status === "OVER_QUERY_LIMIT") throw new Error("OVER_QUERY_LIMIT");
         return res;
       }, 4, 800);
 
@@ -323,7 +302,7 @@ async function upsertLocation(item, catLabel) {
   let extraText = await fetchBlogSnippetsStrong({ name, region: REGION_CANON, category: catLabel });
   if (!extraText || extraText.length < 50) {
     const webFallback = await fetchWebSnippets(
-      `${name} ${REGION_CANON} ${catLabel||""} 후기 리뷰 바 위스키 와인 칵테일 이자카야 사케 사시미`
+      `${name} ${REGION_CANON} ${catLabel||""} 산책 등산 트레킹 하이킹 둘레길 자전거도로 자전거길`
     );
     extraText = `${extraText||""} ${webFallback||""}`.trim();
   }
@@ -339,7 +318,7 @@ async function upsertLocation(item, catLabel) {
 
   // 태깅
   const moodTags = inferMoodTags(baseTextRaw);
-  const keywordTags = inferPubKeywordTags({ textRaw: baseTextRaw });
+  const keywordTags = inferWalkKeywordTags({ textRaw: baseTextRaw });
 
   // 병합(허용 집합 필터)
   const prevKeywords = Array.isArray(existing?.keywords) ? existing.keywords : [];
@@ -360,7 +339,7 @@ async function upsertLocation(item, catLabel) {
     address,
     latitude:  latStr,
     longitude: lngStr,
-    category: "술집",
+    category: "산책/등산",
     keywords: { set: mergedKeywords || [] },
     features: featuresJson,
     features_flat: { set: mergedMoodFlat || [] },
@@ -371,7 +350,7 @@ async function upsertLocation(item, catLabel) {
     address,
     latitude:  latStr,
     longitude: lngStr,
-    category: "술집",
+    category: "산책/등산",
     is_solo_friendly: true,
     keywords: mergedKeywords || [],
     features: featuresJson,
@@ -426,7 +405,7 @@ function composeRegionCombos() {
 function composeCategoryVariants(cat) {
   const syns = CATEGORY_SYNONYMS[cat] || [cat];
   const set = new Set();
-  syns.forEach(s => set.add(canon(s))); // 해시태그/수식어 없음
+  syns.forEach(s => set.add(canon(s)));
   return Array.from(set);
 }
 
@@ -509,7 +488,7 @@ async function runCategory(cat) {
     try {
       const ping = await axios.get(NAVER_LOCAL_URL, {
         headers: localHeaders,
-        params: { query: "영통 술집", display: 1, start: 1 },
+        params: { query: "영통 산책", display: 1, start: 1 },
         timeout: 5000,
       });
       console.log("[warmup] ok. items:", Array.isArray(ping.data?.items) ? ping.data.items.length : 0);
