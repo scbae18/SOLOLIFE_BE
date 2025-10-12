@@ -1,15 +1,75 @@
 // src/services/weather.service.js
 import axios from 'axios';
-import https from 'https';   // ✅ 추가
-import dns from 'dns';       // ✅ 추가
+import https from 'https';
+import dns from 'dns';
 import { ApiError } from '../lib/ApiError.js';
 
-// ✅ IPv4 전용 httpsAgent (EC2는 IPv6 egress가 없을 수 있음)
 const httpsAgentIPv4 = new https.Agent({
   keepAlive: true,
   lookup: (hostname, opts, cb) =>
     dns.lookup(hostname, { family: 4, all: false }, cb),
 });
+
+async function fetchOpenMeteo(params) {
+  const host = 'api.open-meteo.com';
+  const url = `https://${host}/v1/forecast`;
+
+  // 1차: 정상 도메인으로 시도
+  try {
+    const res = await axios.get(url, {
+      params,
+      timeout: 12000,
+      headers: { 'User-Agent': 'SOLOLIFE_BE/1.0' },
+      httpsAgent: httpsAgentIPv4,
+      validateStatus: (s) => s >= 200 && s < 300,
+    });
+    return res.data;
+  } catch (e1) {
+    // 2차: A 레코드(IPv4)로 직접 접속 + SNI/Host 명시
+    try {
+      const { resolve4 } = dns.promises;
+      const ips = await resolve4(host); // ex) ['5.9.x.x', ...]
+      if (!ips?.length) throw e1;
+
+      const ip = ips[0];
+      const ipUrl = `https://${ip}/v1/forecast`;
+
+      const ipAgent = new https.Agent({
+        keepAlive: true,
+        servername: host, // ✅ SNI
+      });
+
+      const res2 = await axios.get(ipUrl, {
+        params,
+        timeout: 12000,
+        headers: {
+          'User-Agent': 'SOLOLIFE_BE/1.0',
+          'Host': host, // ✅ Host 헤더로 가상호스트 지정
+        },
+        httpsAgent: ipAgent,
+        validateStatus: (s) => s >= 200 && s < 300,
+      });
+      return res2.data;
+    } catch (e2) {
+      // 두 시도 모두 실패 → 원인 로깅 후 throw
+      const err = e2.response ? e2 : e1;
+      const status = err.response?.status ?? 502;
+      const body = err.response?.data;
+      console.error('[Open-Meteo] failed (both attempts)', {
+        status,
+        code: err.code,
+        message: err.message,
+        step: err === e1 ? 'domain' : 'ip-direct',
+        data: body,
+      });
+      if (status >= 400 && status < 500) {
+        const msg = (typeof body === 'string' ? body : body?.reason || body?.error) || '잘못된 요청';
+        throw new ApiError(status, `날씨 제공자 4xx 응답: ${msg}`);
+      }
+      throw new ApiError(502, '날씨 제공자 호출 실패(Open-Meteo). 잠시 후 다시 시도해주세요.');
+    }
+  }
+}
 
 function mapWeatherCodeToBrief(wmo) {
   const SUNNY = { code: 'SUNNY', label: '화창' };
@@ -28,45 +88,18 @@ export async function getBriefWeatherByLatLng(lat, lng) {
   const longitude = Number(lng);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
     throw new ApiError(400, 'lat/lng가 유효한 숫자가 아닙니다.');
-  }
+    }
 
-  const url = 'https://api.open-meteo.com/v1/forecast';
   const params = {
     latitude,
     longitude,
-    // ✅ 언더스코어 표기
     current: ['temperature_2m', 'weather_code', 'precipitation'].join(','),
     hourly: ['cloud_cover', 'precipitation', 'rain', 'snowfall'].join(','),
-    timezone: 'auto'
+    timezone: 'auto',
   };
 
-  let data;
-  try {
-    const res = await axios.get(url, {
-      params,
-      timeout: 12000,
-      headers: { 'User-Agent': 'SOLOLIFE_BE/1.0' },
-      httpsAgent: httpsAgentIPv4, // ✅ 핵심 한 줄
-    });
-    data = res.data;
-  } catch (e) {
-    const status = e.response?.status ?? 502;
-    const body = e.response?.data;
-    // 🔎 꼭 남겨두세요: 원인 파악에 결정적
-    console.error('[Open-Meteo] request failed', {
-      status,
-      code: e.code,
-      message: e.message,
-      data: body
-    });
-    if (status >= 400 && status < 500) {
-      const msg = (typeof body === 'string' ? body : body?.reason || body?.error) || '잘못된 요청';
-      throw new ApiError(status, `날씨 제공자 4xx 응답: ${msg}`);
-    }
-    throw new ApiError(502, '날씨 제공자 호출 실패(Open-Meteo). 잠시 후 다시 시도해주세요.');
-  }
+  const data = await fetchOpenMeteo(params);
 
-  // ✅ 응답 키도 언더스코어
   const wmo = data?.current?.weather_code;
   if (wmo == null) {
     console.error('[Open-Meteo] missing weather_code', data?.current);
@@ -74,22 +107,21 @@ export async function getBriefWeatherByLatLng(lat, lng) {
   }
 
   const brief = mapWeatherCodeToBrief(Number(wmo));
-
   return {
     brief,
     current: {
       temperature_2m: data?.current?.temperature_2m ?? null,
       weather_code: wmo,
       precipitation: data?.current?.precipitation ?? null,
-      time: data?.current?.time ?? null
+      time: data?.current?.time ?? null,
     },
     hint: {
       cloud_cover_now: pickHourlyNow(data?.hourly, 'cloud_cover', data?.current?.time),
       rain_now: pickHourlyNow(data?.hourly, 'rain', data?.current?.time),
       snowfall_now: pickHourlyNow(data?.hourly, 'snowfall', data?.current?.time),
-      precipitation_now: pickHourlyNow(data?.hourly, 'precipitation', data?.current?.time)
+      precipitation_now: pickHourlyNow(data?.hourly, 'precipitation', data?.current?.time),
     },
-    provider: 'open-meteo'
+    provider: 'open-meteo',
   };
 }
 
