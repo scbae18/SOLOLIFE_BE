@@ -1,6 +1,6 @@
 // src/routes/onboarding.routes.js
 import { Router } from 'express';
-import { requireAuth } from '../lib/requireAuth.js'; 
+import { requireAuth } from '../lib/requireAuth.js';
 import { postOnboarding } from '../controllers/onboarding.controller.js';
 
 const router = Router();
@@ -17,7 +17,7 @@ const router = Router();
  * /users/onboarding:
  *   post:
  *     summary: 온보딩 답변 저장
- *     description: 닉네임, 캐릭터 종류(A/B), 관심 주제를 User.onboarding_answers에 그대로 저장합니다. 닉네임이 있으면 username도 함께 업데이트됩니다.
+ *     description: 닉네임, 캐릭터 종류(A/B), 관심 주제를 User.onboarding_answers에 저장합니다. 닉네임이 있으면 username도 함께 업데이트됩니다. 온보딩 완료 시 기본 캐릭터(base_f, base_m)와 에셋(tent, tree)을 지급/장착합니다.
  *     tags: [Onboarding]
  *     security:
  *       - bearerAuth: []
@@ -36,7 +36,7 @@ const router = Router();
  *                 example: "승챤"
  *               characterType:
  *                 type: string
- *                 enum: [A, B]
+ *                 enum: ["A", "B"]
  *                 example: "A"
  *               interests:
  *                 type: array
@@ -80,9 +80,19 @@ const router = Router();
  *                             type: string
  *                           example: ["카페", "산책/활동"]
  *                     current_character_id:
- *                       type: integer
+ *                       type: string
  *                       nullable: true
- *                       example: null
+ *                       example: "base_f"
+ *                     assets:
+ *                       type: array
+ *                       items:
+ *                         type: integer
+ *                       example: [1, 2]
+ *                     current_assets:
+ *                       type: object
+ *                       example:
+ *                         bg1-only: "tent"
+ *                         bg23: ["tree"]
  *       400:
  *         description: 잘못된 입력
  *       401:
