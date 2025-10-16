@@ -17,7 +17,11 @@ const router = Router();
  * /users/onboarding:
  *   post:
  *     summary: 온보딩 답변 저장
- *     description: 닉네임, 캐릭터 종류(A/B), 관심 주제를 User.onboarding_answers에 저장합니다. 닉네임이 있으면 username도 함께 업데이트됩니다. 온보딩 완료 시 기본 캐릭터(base_f, base_m)와 에셋(tent, tree)을 지급/장착합니다.
+ *     description: |
+ *       닉네임(User.nickname), 캐릭터 종류(base_f/base_m), 관심 주제를 `User.onboarding_answers`에 저장합니다.
+ *       - **username은 변경하지 않고, nickname만 업데이트**합니다.
+ *       - 온보딩 완료 시 선택 캐릭터 보유를 보장하고, 기본 에셋(tent, tree)을 지급하며 장착값은 다음과 같이 설정합니다.
+ *         - `current_assets`: `{ "bg1-only": "tent", "bg23": ["tree", "tree"] }`
  *     tags: [Onboarding]
  *     security:
  *       - bearerAuth: []
@@ -36,8 +40,8 @@ const router = Router();
  *                 example: "승챤"
  *               characterType:
  *                 type: string
- *                 enum: ["A", "B"]
- *                 example: "A"
+ *                 enum: ["base_f", "base_m"]
+ *                 example: "base_f"
  *               interests:
  *                 type: array
  *                 minItems: 1
@@ -64,6 +68,11 @@ const router = Router();
  *                       example: 3
  *                     username:
  *                       type: string
+ *                       nullable: true
+ *                       example: "기존-유저네임-변경없음"
+ *                     nickname:
+ *                       type: string
+ *                       nullable: true
  *                       example: "승챤"
  *                     onboarding_answers:
  *                       type: object
@@ -73,7 +82,7 @@ const router = Router();
  *                           example: "승챤"
  *                         characterType:
  *                           type: string
- *                           example: "A"
+ *                           example: "base_f"
  *                         interests:
  *                           type: array
  *                           items:
@@ -92,7 +101,7 @@ const router = Router();
  *                       type: object
  *                       example:
  *                         bg1-only: "tent"
- *                         bg23: ["tree"]
+ *                         bg23: ["tree", "tree"]
  *       400:
  *         description: 잘못된 입력
  *       401:

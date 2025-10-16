@@ -19,6 +19,7 @@ model User {
   created_at           DateTime @default(now()) @db.Timestamptz(3)
   is_public_profile    Boolean  @default(true)
   current_character_id String?  @db.VarChar(50)
+  nickname           String?
 
   // 🎯 수정됨: 현재 장착 중인 에셋 구조 변경
   // 예: {"bg1-only": "tent", "bg23": ["bee", "butterfly"]}
