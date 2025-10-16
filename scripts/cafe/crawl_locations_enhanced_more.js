@@ -5,13 +5,10 @@ import crypto from "crypto";
 import { PrismaClient, Prisma } from "@prisma/client";
 
 /**
- * 카페(영통권) 크롤러 - 최대 커버리지 버전
- * - 지역 × 카테고리(동의어)만 사용하여 가장 넓게 탐색
- * - feature(무드 태그) 로직은 그대로 유지
- * - category는 "카페"로 저장
- * - keywords는 ["사진찍기 좋은", "콘센트 많은"]만 저장(규칙 기반 추론)
- * - Google TextSearch로 { place_id, lat, lng }만 사용 (가능 시)
- * - description/opening_hours/price/rating/photo는 저장하지 않음
+ * 카페(영통권) 크롤러 - 최대 커버리지 + 무료 이미지(최대 3장) 저장
+ * - 과금 회피: Google Places **Photo/Details 호출 안 함** (TextSearch는 좌표만, 옵션)
+ * - 사진은 Naver Image Search(OpenAPI, 무료 쿼터)만 사용
+ * - LocationPhoto: position 1~3에 remote_url/attributions 저장
  */
 
 const prisma = new PrismaClient();
@@ -42,13 +39,10 @@ const ADJACENT_DISTRICTS = [
 const CATEGORY_KEYWORDS = ["카페"];
 const CATEGORY_SYNONYMS = {
   카페: [
-    // 상위/일반
     "카페", "카페거리", "커피", "커피숍", "레스토랑 카페", "스페셜티", "로스터리",
-    // 메뉴/타입
     "에스프레소", "라떼", "드립커피", "핸드드립", "브루잉", "콜드브루",
     "디저트", "디저트카페", "베이커리", "베이커리카페", "브런치", "브런치카페",
     "티룸", "티하우스", "말차", "홍차",
-    // 이용 맥락(커버리지 확대용)
     "작업 카페", "스터디 카페", "노트북 작업", "조용한 카페", "뷰카페", "루프탑 카페",
   ],
 };
@@ -71,6 +65,7 @@ const BASE_DELAY_MS = 220;             // RPS 완화
 const NAVER_LOCAL_URL       = "https://openapi.naver.com/v1/search/local.json";
 const NAVER_BLOG_URL        = "https://openapi.naver.com/v1/search/blog.json";
 const NAVER_WEB_URL         = "https://openapi.naver.com/v1/search/webkr.json";
+const NAVER_IMAGE_URL       = "https://openapi.naver.com/v1/search/image";
 const GOOGLE_PLACES_TEXT    = "https://maps.googleapis.com/maps/api/place/textsearch/json";
 
 const {
@@ -83,7 +78,7 @@ if (!NAVER_OPENAPI_CLIENT_ID || !NAVER_OPENAPI_CLIENT_SECRET) {
   throw new Error("NAVER_OPENAPI_CLIENT_ID / NAVER_OPENAPI_CLIENT_SECRET 누락");
 }
 if (!GOOGLE_MAPS_API_KEY) {
-  console.warn("[env] GOOGLE_MAPS_API_KEY 누락 (좌표 채우려면 필요)");
+  console.warn("[env] GOOGLE_MAPS_API_KEY 누락 (좌표 채우려면 필요, 사진은 미사용)");
 }
 
 const localHeaders = {
@@ -118,6 +113,21 @@ function toDecimalString6(v) {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return null;
   return Number(v).toFixed(6);
 }
+function hostnameOf(url="") {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; }
+}
+function looksLikeThumbnail(url="") {
+  const u = url.toLowerCase();
+  return (
+    u.includes("thumb") || u.includes("thumbnail") ||
+    u.includes("small") || u.includes("min") ||
+    u.endsWith(".gif")
+  );
+}
+function isStaticImage(url="") {
+  const u = url.toLowerCase();
+  return u.endsWith(".jpg") || u.endsWith(".jpeg") || u.endsWith(".png") || u.endsWith(".webp");
+}
 
 // 쿼리 정규화/중복 억제
 const STOPWORDS = new Set(["에서", "근처", "근방", "주변", "인근", "부근", "역근처", "역", "맛"]);
@@ -146,7 +156,7 @@ const makeDedupeSig = ({ name, address }) =>
     .update(`${(name || "").toLowerCase()}|${(address || "").toLowerCase()}`)
     .digest("hex").slice(0, 32);
 
-// =================== feature(무드) 규칙 (그대로 유지) ===================
+// =================== feature(무드) 규칙 ===================
 const ALLOWED_MOOD_FEATURES = [
   "사람많은", "한적한", "넓은", "아늑한", "조용한", "활기찬", "밝은", "어두운",
 ];
@@ -166,7 +176,7 @@ const MOOD_RULES = {
   어두운: [/어둡/, /무드등/, /은은한\s*조명/, /저조도/],
 };
 
-// 사진찍기 좋은 (포토 스팟/감성/뷰)
+// 사진/콘센트 규칙
 const PHOTO_STRONG = [
   /포토존/, /포토\s*스팟/, /인생샷/, /사진\s*맛집/, /인스타\s*감성/,
   /뷰\s*좋/, /전경\s*좋/, /루프탑\s*뷰/, /야경\s*좋/, /감성\s*카페/,
@@ -176,8 +186,6 @@ const PHOTO_WEAK = [
   /감성/, /분위기\s*좋/, /인테리어\s*예쁘/, /감성\s*인테리어/, /사진\s*찍기\s*좋/,
   /피크닉\s*감성/, /무드\s*등/, /플라워\s*카페/, /스냅\s*촬영/,
 ];
-
-// 콘센트 많은 (작업/충전/플러그)
 const OUTLET_STRONG = [
   /콘센트\s*많/, /플러그\s*많/, /멀티탭/, /좌석마다\s*콘센트/, /각\s*좌석\s*콘센트/,
   /충전\s*가능/, /노트북\s*충전/, /전원\s*콘센트/,
@@ -203,7 +211,7 @@ function inferMoodTags(textRaw) {
   return Array.from(new Set(found));
 }
 
-// 2) 키워드(사진/콘센트) 추론 (점수 기반)
+// 2) 키워드(사진/콘센트) 추론
 function inferCafeKeywordTags({ textRaw }) {
   const t = normalizeText(textRaw || "");
   const out = [];
@@ -226,6 +234,7 @@ function inferCafeKeywordTags({ textRaw }) {
 // =================== 캐시 ===================
 const SNIPPET_CACHE = new Map();
 const GOOGLE_TEXT_CACHE = new Map();
+const IMAGE_CACHE = new Map(); // key: q, val: [{link,title}...]
 
 // =================== 외부 API ===================
 async function fetchLocal(query, start = 1) {
@@ -242,6 +251,7 @@ async function fetchLocal(query, start = 1) {
   }, 5, 600);
   return data.items || [];
 }
+
 async function fetchBlogSnippetsStrong({ name, region, category }) {
   const key = `BLOG:${name}|${region}|${category||""}`;
   if (SNIPPET_CACHE.has(key)) return SNIPPET_CACHE.get(key);
@@ -266,6 +276,7 @@ async function fetchBlogSnippetsStrong({ name, region, category }) {
   SNIPPET_CACHE.set(key, merged);
   return merged;
 }
+
 async function fetchWebSnippets(query, display=20) {
   const key = `WEB:${query}|${display}`;
   if (SNIPPET_CACHE.has(key)) return SNIPPET_CACHE.get(key);
@@ -278,7 +289,48 @@ async function fetchWebSnippets(query, display=20) {
   return merged;
 }
 
-// Google: TextSearch → place_id, lat, lng (ONLY) + 메모/백오프
+// ✅ Naver Image Search만 사용 (무료 쿼터) — 최대 3장 선택
+async function fetchNaverImages(query, want = 3) {
+  const key = `IMG:${query}`;
+  if (IMAGE_CACHE.has(key)) return IMAGE_CACHE.get(key);
+
+  const params = {
+    query,
+    display: Math.max(10, want * 5), // 넉넉히 받아 필터링
+    start: 1,
+    sort: "sim", // 유사도
+    // filter 파라미터는 (all|large) 정도만 지원. 너무 제한하면 결과가 줄어서 생략.
+  };
+
+  const { data } = await withRetry(() =>
+    axios.get(NAVER_IMAGE_URL, { headers: localHeaders, params, timeout: 8000 })
+  );
+
+  const items = Array.isArray(data?.items) ? data.items : [];
+
+  // 필터링: 정적 이미지 확장자, 썸네일 추정 제외, host 다양성 보장
+  const uniqByHost = new Map(); // host -> {link,title}
+  for (const it of items) {
+    const link = it?.link || it?.thumbnail || it?.image || "";
+    if (!link) continue;
+    if (!isStaticImage(link)) continue;
+    if (looksLikeThumbnail(link)) continue;
+
+    const host = hostnameOf(link);
+    if (!host) continue;
+    if (!uniqByHost.has(host)) {
+      uniqByHost.set(host, { link, title: (it.title || it.description || "").replace(/<[^>]*>/g, "").trim() });
+    }
+    if (uniqByHost.size >= want * 3) break; // 후보 과다 수집 방지
+  }
+
+  // host가 겹치지 않도록 1개씩 뽑아 최대 want개
+  const selected = Array.from(uniqByHost.values()).slice(0, want);
+  IMAGE_CACHE.set(key, selected);
+  return selected;
+}
+
+// Google: TextSearch → place_id, lat, lng (ONLY) + 메모/백오프 (사진 미사용)
 async function searchPlaceByText(name, address) {
   if (!GOOGLE_MAPS_API_KEY) return null;
   const qPrimary = address ? `${name} ${address}` : `${name} ${REGION_CANON}`;
@@ -334,7 +386,7 @@ async function upsertLocation(item, catLabel) {
   }
   const baseTextRaw = `${name} ${desc} ${extraText||""} ${catLabel||""}`;
 
-  // Google 좌표
+  // 좌표 (무료 필요 시에만)
   let coords = { place_id: null, lat: null, lng: null };
   try {
     const found = await searchPlaceByText(name, address);
@@ -397,7 +449,62 @@ async function upsertLocation(item, catLabel) {
     ` | moods=[${mergedMoodFlat.join(", ")}]` +
     ` | keywords=[${mergedKeywords.join(", ")}]`
   );
+
+  // ✅ 무료 이미지 3장 채우기
+  await ensureThreePhotos({ locationId: loc.location_id, name, address });
+
   return loc;
+}
+
+// ✅ LocationPhoto 3장 보장 로직 (position 1~3 upsert)
+async function ensureThreePhotos({ locationId, name, address }) {
+  try {
+    // 현재 몇 장 있는지 확인
+    const existing = await prisma.locationPhoto.findMany({
+      where: { location_id: locationId },
+      orderBy: { position: "asc" },
+    });
+
+    if (existing.length >= 3) return; // 이미 충분
+
+    const query = `${name} ${REGION_CANON} 카페`;
+    const candidates = await fetchNaverImages(query, 3);
+
+    // 후보에서 아직 없는 position 채우기
+    const havePos = new Set(existing.map(p => p.position));
+    const needPositions = [1,2,3].filter(p => !havePos.has(p));
+    let idx = 0;
+
+    for (const pos of needPositions) {
+      if (idx >= candidates.length) break;
+      const c = candidates[idx++];
+      const host = hostnameOf(c.link);
+
+      // 업서트(UNIQUE: [location_id, position])
+      await prisma.locationPhoto.upsert({
+        where: {
+          location_id_position: { location_id: locationId, position: pos }
+        },
+        update: {
+          remote_url: c.link,
+          attributions: [`source:${host}`, c.title ? `title:${c.title}` : `title:`],
+          photo_reference: `NAVER_IMAGE:${host}`, // 참조 표식
+        },
+        create: {
+          location_id: locationId,
+          position: pos,
+          remote_url: c.link,
+          attributions: [`source:${host}`, c.title ? `title:${c.title}` : `title:`],
+          photo_reference: `NAVER_IMAGE:${host}`,
+        },
+      });
+
+      console.log(`[photo] loc=${locationId} pos=${pos} -> ${c.link} (${host})`);
+      await sleep(80); // 과한 RPS 방지
+    }
+  } catch (e) {
+    console.warn("[ensureThreePhotos] error", e?.message || e);
+  }
 }
 
 // =================== 쿼리 조합 (넓게) ===================
@@ -431,7 +538,7 @@ function composeRegionCombos() {
 function composeCategoryVariants(cat) {
   const syns = CATEGORY_SYNONYMS[cat] || [cat];
   const set = new Set();
-  syns.forEach(s => set.add(canon(s))); // 해시태그/수식어 없음
+  syns.forEach(s => set.add(canon(s)));
   return Array.from(set);
 }
 

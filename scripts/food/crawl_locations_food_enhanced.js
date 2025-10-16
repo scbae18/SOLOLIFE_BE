@@ -8,7 +8,8 @@ import { PrismaClient, Prisma } from "@prisma/client";
  * 음식점(영통권) 크롤러 확장판 - 좌표만 사용 / description 제외
  * - 키워드: "1인석"만 저장
  * - 지역 바리에이션/수식어/해시태그 확장, Naver Local 페이지네이션 + 스니펫 보강
- * - Google TextSearch → { place_id, lat, lng }만 사용
+ * - Google TextSearch → { place_id, lat, lng }만 사용(좌표만)
+ * - 사진: Naver Image Search만 사용(무료) → LocationPhoto position 1~3 upsert
  * - description / opening_hours / types / price_level 저장하지 않음
  */
 
@@ -112,6 +113,7 @@ const USE_FEATURES_FALLBACK = false; // (영업시간 사용 안 하므로 의�
 const NAVER_LOCAL_URL       = "https://openapi.naver.com/v1/search/local.json";
 const NAVER_BLOG_URL        = "https://openapi.naver.com/v1/search/blog.json";
 const NAVER_WEB_URL         = "https://openapi.naver.com/v1/search/webkr.json";
+const NAVER_IMAGE_URL       = "https://openapi.naver.com/v1/search/image"; // ✅ 무료 이미지 검색
 const GOOGLE_PLACES_TEXT    = "https://maps.googleapis.com/maps/api/place/textsearch/json";
 
 const {
@@ -155,10 +157,22 @@ function normalizeText(s = "") {
     .trim()
     .toLowerCase();
 }
-
 function toDecimalString6(v) {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return null;
   return Number(v).toFixed(6); // Prisma Decimal과 호환되는 문자열
+}
+
+// URL/이미지 유틸
+function hostnameOf(url="") {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; }
+}
+function looksLikeThumbnail(url="") {
+  const u = url.toLowerCase();
+  return u.includes("thumb") || u.includes("thumbnail") || u.includes("small") || u.includes("min") || u.endsWith(".gif");
+}
+function isStaticImage(url="") {
+  const u = url.toLowerCase();
+  return u.endsWith(".jpg") || u.endsWith(".jpeg") || u.endsWith(".png") || u.endsWith(".webp");
 }
 
 // 쿼리 정규화/중복 억제
@@ -252,6 +266,8 @@ function inferKeywordTagsStrict({ textRaw }) {
 
 // =================== 캐시 ===================
 const SNIPPET_CACHE = new Map();
+const GOOGLE_TEXT_CACHE = new Map();
+const IMAGE_CACHE = new Map(); // q -> [{link,title}...]
 
 // =================== 외부 API ===================
 async function fetchLocal(query, start = 1) {
@@ -261,7 +277,7 @@ async function fetchLocal(query, start = 1) {
     timeout: 8000,
     validateStatus: s => (s >= 200 && s < 300) || s === 429
   });
-  const { data, status } = await withRetry(async () => {
+  const { data } = await withRetry(async () => {
     const res = await fn();
     if (res.status === 429) throw new Error("NAVER_RATE_LIMIT");
     return res;
@@ -304,8 +320,49 @@ async function fetchWebSnippets(query, display=20) {
   return merged;
 }
 
-// Google: TextSearch → place_id, lat, lng (ONLY) + 메모이제이션/백오프
-const GOOGLE_TEXT_CACHE = new Map();
+// ✅ Naver Image Search만 사용 — 최대 3장 선별
+async function fetchNaverImages(query, want = 3) {
+  const key = `IMG:${query}`;
+  if (IMAGE_CACHE.has(key)) return IMAGE_CACHE.get(key);
+
+  const params = {
+    query,
+    display: Math.max(10, want * 5),
+    start: 1,
+    sort: "sim",
+  };
+
+  const { data } = await withRetry(() =>
+    axios.get(NAVER_IMAGE_URL, { headers: localHeaders, params, timeout: 8000 })
+  );
+
+  const items = Array.isArray(data?.items) ? data.items : [];
+  const uniqByHost = new Map(); // host -> {link,title}
+
+  for (const it of items) {
+    const link = it?.link || it?.thumbnail || it?.image || "";
+    if (!link) continue;
+    if (!isStaticImage(link)) continue;
+    if (looksLikeThumbnail(link)) continue;
+
+    const host = hostnameOf(link);
+    if (!host) continue;
+
+    if (!uniqByHost.has(host)) {
+      uniqByHost.set(host, {
+        link,
+        title: (it.title || it.description || "").replace(/<[^>]*>/g, "").trim(),
+      });
+    }
+    if (uniqByHost.size >= want * 3) break;
+  }
+
+  const selected = Array.from(uniqByHost.values()).slice(0, want);
+  IMAGE_CACHE.set(key, selected);
+  return selected;
+}
+
+// Google: TextSearch → place_id, lat, lng (ONLY)
 async function searchPlaceByText(name, address) {
   if (!GOOGLE_MAPS_API_KEY) return null;
   const qPrimary = address ? `${name} ${address}` : `${name} ${REGION_CANON}`;
@@ -399,7 +456,6 @@ async function upsertLocation(item, catLabel) {
     features: featuresJson,
     features_flat: { set: mergedMoodFlat || [] }, // 배열 set
     ...(coords.place_id ? { google_place_id: coords.place_id } : {}),
-    // updated_at: @updatedAt 자동
   };
   const createPayload = {
     location_name: name,
@@ -408,13 +464,11 @@ async function upsertLocation(item, catLabel) {
     longitude: lngStr,
     category: "음식점",
     is_solo_friendly: true,
-    // description: 제외
     keywords: mergedKeywords || [],
     features: featuresJson,
     features_flat: mergedMoodFlat || [],
     ...(coords.place_id ? { google_place_id: coords.place_id } : {}),
     dedupe_signature,
-    // created_at: now() 기본
   };
 
   const loc = await prisma.location.upsert({
@@ -429,7 +483,60 @@ async function upsertLocation(item, catLabel) {
     ` | moods=[${mergedMoodFlat.join(", ")}]` +
     ` | keywords=[${mergedKeywords.join(", ")}]`
   );
+
+  // ✅ 무료 이미지 3장 채우기
+  await ensureThreePhotos({ locationId: loc.location_id, name, address });
+
   return loc;
+}
+
+// ✅ LocationPhoto 3장 보장 로직 (position 1~3 upsert)
+async function ensureThreePhotos({ locationId, name, address }) {
+  try {
+    const existing = await prisma.locationPhoto.findMany({
+      where: { location_id: locationId },
+      orderBy: { position: "asc" },
+    });
+
+    if (existing.length >= 3) return;
+
+    // 검색 쿼리: 상호 + 지역 + 카테고리 단서
+    const query = `${name} ${REGION_CANON} 음식점`;
+    const candidates = await fetchNaverImages(query, 3);
+
+    const havePos = new Set(existing.map(p => p.position));
+    const needPositions = [1,2,3].filter(p => !havePos.has(p));
+    let idx = 0;
+
+    for (const pos of needPositions) {
+      if (idx >= candidates.length) break;
+      const c = candidates[idx++];
+      const host = hostnameOf(c.link);
+
+      await prisma.locationPhoto.upsert({
+        where: {
+          location_id_position: { location_id: locationId, position: pos }
+        },
+        update: {
+          remote_url: c.link,
+          attributions: [`source:${host}`, c.title ? `title:${c.title}` : `title:`],
+          photo_reference: `NAVER_IMAGE:${host}`,
+        },
+        create: {
+          location_id: locationId,
+          position: pos,
+          remote_url: c.link,
+          attributions: [`source:${host}`, c.title ? `title:${c.title}` : `title:`],
+          photo_reference: `NAVER_IMAGE:${host}`,
+        },
+      });
+
+      console.log(`[photo] loc=${locationId} pos=${pos} -> ${c.link} (${host})`);
+      await sleep(80);
+    }
+  } catch (e) {
+    console.warn("[ensureThreePhotos] error", e?.message || e);
+  }
 }
 
 // =================== 바리에이션 생성 (확장판) ===================
@@ -557,9 +664,9 @@ function composeQueriesForCategory(cat) {
 
           // 해시태그 확장
           if (!/#/.test(category)) {
-            const hashMod = `#${m.replace(/\s+/g, "")}`;
-            const hashCat = `#${categoryPlain.replace(/\s+/g, "")}`;
-            queries.add(canon(`${region} ${hashMod} ${hashCat}`));
+            const hashMod = ` #${m.replace(/\s+/g, "")}`;
+            const hashCat = ` #${categoryPlain.replace(/\s+/g, "")}`;
+            queries.add(canon(`${region}${hashMod}${hashCat}`));
             if (queries.size >= CAP.q) break outer;
           }
         }

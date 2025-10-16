@@ -5,11 +5,12 @@ import crypto from "crypto";
 import { PrismaClient, Prisma } from "@prisma/client";
 
 /**
- * 음식점(영통권) 크롤러 - 최대 커버리지 버전
+ * 음식점(영통권) 크롤러 - 최대 커버리지 버전 (+무료 이미지 3장 저장)
  * - 지역 × 카테고리(동의어)만 사용하여 가장 넓게 탐색
- * - 수식어/해시태그 콤보 전부 제거
- * - Google TextSearch로 { place_id, lat, lng }만 사용 (가능 시)
- * - description/opening_hours/price/rating/photo는 저장하지 않음
+ * - 수식어/해시태그 콤보 제거
+ * - Google TextSearch는 { place_id, lat, lng }만 사용(좌표용, 선택)
+ * - description/opening_hours/price/rating은 저장하지 않음
+ * - 사진은 **Naver Image Search만** 사용 → LocationPhoto position 1~3 upsert
  */
 
 const prisma = new PrismaClient();
@@ -54,7 +55,7 @@ const CATEGORY_SYNONYMS = {
     "쭈꾸미", "족발", "보쌈", "찜닭",
     // 치킨/분점류
     "치킨", "호프", "술집", "포차", "이자카야", "막걸리",
-    // 베이커리/카페(겸업 식사처 잡히는 경우 확대용)
+    // 베이커리/카페(겸업 식사처 확대용)
     "베이커리", "빵집", "브런치", "카페",
   ],
 };
@@ -71,12 +72,13 @@ const DISPLAY = 30;                    // Naver Local: 페이지당 최대 30
 const MAX_PAGES_PER_QUERY = 10;        // 쿼리당 최대 300건
 const MAX_QUERIES_PER_CATEGORY = 500;  // 카테고리당 쿼리 500개
 const MAX_ITEMS_PER_CATEGORY   = 2000; // 실제 upsert 최대치
-const BASE_DELAY_MS = 220;             // RPS 완화(너무 줄이면 429 위험)
+const BASE_DELAY_MS = 220;             // RPS 완화(429 방지)
 
 // =================== API URL/ENV ===================
 const NAVER_LOCAL_URL       = "https://openapi.naver.com/v1/search/local.json";
 const NAVER_BLOG_URL        = "https://openapi.naver.com/v1/search/blog.json";
 const NAVER_WEB_URL         = "https://openapi.naver.com/v1/search/webkr.json";
+const NAVER_IMAGE_URL       = "https://openapi.naver.com/v1/search/image"; // ✅ 무료 이미지 검색
 const GOOGLE_PLACES_TEXT    = "https://maps.googleapis.com/maps/api/place/textsearch/json";
 
 const {
@@ -125,6 +127,23 @@ function toDecimalString6(v) {
   return Number(v).toFixed(6);
 }
 
+// URL/이미지 유틸
+function hostnameOf(url="") {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; }
+}
+function looksLikeThumbnail(url="") {
+  const u = url.toLowerCase();
+  return (
+    u.includes("thumb") || u.includes("thumbnail") ||
+    u.includes("small") || u.includes("min") ||
+    u.endsWith(".gif")
+  );
+}
+function isStaticImage(url="") {
+  const u = url.toLowerCase();
+  return u.endsWith(".jpg") || u.endsWith(".jpeg") || u.endsWith(".png") || u.endsWith(".webp");
+}
+
 // 쿼리 정규화/중복 억제
 const STOPWORDS = new Set(["에서", "근처", "근방", "주변", "인근", "부근", "역근처", "역", "맛"]);
 function normalizeQuery(q = "") {
@@ -151,15 +170,6 @@ const makeDedupeSig = ({ name, address }) =>
   crypto.createHash("sha256")
     .update(`${(name || "").toLowerCase()}|${(address || "").toLowerCase()}`)
     .digest("hex").slice(0, 32);
-
-function kCombinations(arr, k) {
-  const res = [];
-  (function bt(start, path) {
-    if (path.length === k) { res.push(path.slice()); return; }
-    for (let i = start; i < arr.length; i++) { path.push(arr[i]); bt(i + 1, path); path.pop(); }
-  })(0, []);
-  return res;
-}
 
 // =================== 허용 태그/규칙 (키워드/무드 저장은 유지) ===================
 const ALLOWED_MOOD_FEATURES = [
@@ -214,6 +224,7 @@ function inferKeywordTagsStrict({ textRaw }) {
 // =================== 캐시 ===================
 const SNIPPET_CACHE = new Map();
 const GOOGLE_TEXT_CACHE = new Map();
+const IMAGE_CACHE = new Map(); // q -> [{link,title}...]
 
 // =================== 외부 API ===================
 async function fetchLocal(query, start = 1) {
@@ -264,6 +275,48 @@ async function fetchWebSnippets(query, display=20) {
   const merged = items.map(it => normalizeText(`${it.title} ${it.description}`)).join(" ");
   SNIPPET_CACHE.set(key, merged);
   return merged;
+}
+
+// ✅ Naver Image Search만 사용 — 최대 3장 선별
+async function fetchNaverImages(query, want = 3) {
+  const key = `IMG:${query}`;
+  if (IMAGE_CACHE.has(key)) return IMAGE_CACHE.get(key);
+
+  const params = {
+    query,
+    display: Math.max(10, want * 5),
+    start: 1,
+    sort: "sim",
+  };
+
+  const { data } = await withRetry(() =>
+    axios.get(NAVER_IMAGE_URL, { headers: localHeaders, params, timeout: 8000 })
+  );
+
+  const items = Array.isArray(data?.items) ? data.items : [];
+  const uniqByHost = new Map(); // host -> {link,title}
+
+  for (const it of items) {
+    const link = it?.link || it?.thumbnail || it?.image || "";
+    if (!link) continue;
+    if (!isStaticImage(link)) continue;
+    if (looksLikeThumbnail(link)) continue;
+
+    const host = hostnameOf(link);
+    if (!host) continue;
+
+    if (!uniqByHost.has(host)) {
+      uniqByHost.set(host, {
+        link,
+        title: (it.title || it.description || "").replace(/<[^>]*>/g, "").trim(),
+      });
+    }
+    if (uniqByHost.size >= want * 3) break;
+  }
+
+  const selected = Array.from(uniqByHost.values()).slice(0, want);
+  IMAGE_CACHE.set(key, selected);
+  return selected;
 }
 
 // Google: TextSearch → place_id, lat, lng (ONLY) + 메모/백오프
@@ -332,7 +385,7 @@ async function upsertLocation(item, catLabel) {
 
   // 태깅
   const moodTags = inferMoodTags(baseTextRaw);
-  const keywordTags = inferKeywordTagsStrict({ textRaw: baseTextRaw }); // 현재는 "1인석"만
+  const keywordTags = inferKeywordTagsStrict({ textRaw: baseTextRaw }); // "1인석"만
 
   // 병합
   const prevKeywords = Array.isArray(existing?.keywords) ? existing.keywords : [];
@@ -385,7 +438,57 @@ async function upsertLocation(item, catLabel) {
     ` | moods=[${mergedMoodFlat.join(", ")}]` +
     ` | keywords=[${mergedKeywords.join(", ")}]`
   );
+
+  // ✅ 무료 이미지 3장 채우기
+  await ensureThreePhotos({ locationId: loc.location_id, name, address });
+
   return loc;
+}
+
+// ✅ LocationPhoto 3장 보장 로직 (position 1~3 upsert)
+async function ensureThreePhotos({ locationId, name, address }) {
+  try {
+    const existing = await prisma.locationPhoto.findMany({
+      where: { location_id: locationId },
+      orderBy: { position: "asc" },
+    });
+
+    if (existing.length >= 3) return;
+
+    const query = `${name} ${REGION_CANON} 음식점`;
+    const candidates = await fetchNaverImages(query, 3);
+
+    const havePos = new Set(existing.map(p => p.position));
+    const needPositions = [1,2,3].filter(p => !havePos.has(p));
+    let idx = 0;
+
+    for (const pos of needPositions) {
+      if (idx >= candidates.length) break;
+      const c = candidates[idx++];
+      const host = hostnameOf(c.link);
+
+      await prisma.locationPhoto.upsert({
+        where: { location_id_position: { location_id: locationId, position: pos } },
+        update: {
+          remote_url: c.link,
+          attributions: [`source:${host}`, c.title ? `title:${c.title}` : `title:`],
+          photo_reference: `NAVER_IMAGE:${host}`,
+        },
+        create: {
+          location_id: locationId,
+          position: pos,
+          remote_url: c.link,
+          attributions: [`source:${host}`, c.title ? `title:${c.title}` : `title:`],
+          photo_reference: `NAVER_IMAGE:${host}`,
+        },
+      });
+
+      console.log(`[photo] loc=${locationId} pos=${pos} -> ${c.link} (${host})`);
+      await sleep(80);
+    }
+  } catch (e) {
+    console.warn("[ensureThreePhotos] error", e?.message || e);
+  }
 }
 
 // =================== 쿼리 조합 (넓게) ===================
@@ -420,7 +523,6 @@ function composeCategoryVariants(cat) {
   const syns = CATEGORY_SYNONYMS[cat] || [cat];
   const set = new Set();
   syns.forEach(s => set.add(canon(s))); // 해시태그/수식어 없음
-  // 2·3콤보는 과한 특이성이 생길 수 있어 제외 (커버리지 우선)
   return Array.from(set);
 }
 
