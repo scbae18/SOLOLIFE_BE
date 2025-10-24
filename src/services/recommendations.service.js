@@ -78,7 +78,7 @@ async function attachPhotosToItems(items) {
     const ids = [...new Set(items.map(x => Number(x.location_id)).filter(Boolean))];
     if (!ids.length) return items;
 
-    // 1) LocationPhoto에서 최대 3장 수집 (remote_url 우선, 없으면 photo_reference로 URL 생성)
+    // 1) LocationPhoto에서 최대 3장 수집 (remote_url > photo_reference)
     const photos = await prisma.locationPhoto.findMany({
       where: { location_id: { in: ids } },
       select: {
@@ -86,25 +86,24 @@ async function attachPhotosToItems(items) {
         position: true,
         remote_url: true,
         photo_reference: true,
-        // attributions: true, // 필요 시 노출용으로 사용 가능
       },
       orderBy: [{ location_id: 'asc' }, { position: 'asc' }]
     });
 
+    // grouped[location_id] = [url, url, url]
     const grouped = new Map();
     for (const p of photos) {
-      const url = p.remote_url || buildGooglePhotoUrl(p.photo_reference);
+      const url = p.remote_url || p.photo_reference; // 이미 완성된 URL로 가정
       if (!url) continue;
       const arr = grouped.get(p.location_id) ?? [];
       if (arr.length < 3) arr.push(url);
       grouped.set(p.location_id, arr);
     }
 
-    // 2) item별로 최대 3장, 그리고 "1장 이상이면 3장으로 패딩"
+    // 2) item별로 최대 3장, 패딩 처리
     let result = items.map(it => {
       const key = Number(it.location_id);
       let ph = (grouped.get(key) ?? []).slice(0, 3);
-
       if (ph.length > 0 && ph.length < 3) {
         const last = ph[ph.length - 1];
         while (ph.length < 3) ph.push(last);
@@ -112,7 +111,7 @@ async function attachPhotosToItems(items) {
       return { ...it, photos: ph };
     });
 
-    // 3) 완전 무사진(0장)인 항목에 대해 Location.fallback_photo_url 보조 적용 (+패딩)
+    // 3) fallback_photo_url 적용
     const needFallbackIds = result.filter(r => (r.photos?.length ?? 0) === 0).map(r => Number(r.location_id));
     if (needFallbackIds.length) {
       const locs = await prisma.location.findMany({
@@ -135,7 +134,7 @@ async function attachPhotosToItems(items) {
 
     return result;
   } catch {
-    // 최후의 방어: 사진 없이 반환
+    // 오류 시 빈 배열로 대체
     return items.map(it => ({ ...it, photos: [] }));
   }
 }
