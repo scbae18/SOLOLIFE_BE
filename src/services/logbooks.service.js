@@ -47,7 +47,7 @@ export async function listPublic(q) {
  * - 루트 level에 location_id가 들어오면 무시
  */
 export async function createEntry(user_id, data) {
-  // places 정규화
+  // places 정규화 (기존과 동일)
   const { places = [], ...logbookData } = data;
   const normPlaces = Array.isArray(places)
     ? places
@@ -57,13 +57,10 @@ export async function createEntry(user_id, data) {
         }))
         .filter((p) => Number.isInteger(p.locationId))
     : [];
-
-  // 레거시 단일 location_id 필드가 들어오면 제거
   if ('location_id' in logbookData) delete logbookData.location_id;
-
-  // 중복 제거된 location_ids
   const locationIds = [...new Set(normPlaces.map((p) => p.locationId))];
 
+  // 1. 로그북 생성 (기존과 동일)
   const newLogbook = await prisma.logbookEntry.create({
     data: {
       ...logbookData,
@@ -72,7 +69,20 @@ export async function createEntry(user_id, data) {
     },
   });
 
-  // 본문이 있고 places가 있으면 리뷰 자동 생성(비동기)
+  // --- ⭐️ 2. 장소 평균 평점 업데이트 로직 추가 ---
+  // 로그북 생성이 성공한 후에 각 장소의 평점을 업데이트합니다.
+  if (normPlaces.length > 0) {
+    // Promise.all 대신 for...of 루프 사용
+    for (const place of normPlaces) {
+      if (place.rating !== null) {
+        // await를 사용하여 각 업데이트가 끝날 때까지 기다립니다.
+        await updateLocationAverageRating(place.locationId, place.rating);
+      }
+    }
+  }
+  // --- 평점 업데이트 로직 끝 ---
+
+  // 3. 리뷰 자동 생성 호출 (기존과 동일, 비동기)
   if (normPlaces.length && newLogbook.entry_content) {
     createReviewsFromLogbook(newLogbook, normPlaces);
   }
@@ -190,4 +200,44 @@ export async function listMine(user_id, q) {
   ]);
 
   return { page, limit, total, items };
+}
+
+/**
+ * 특정 장소의 평균 평점과 카운트를 업데이트합니다.
+ * @param {number} locationId - 업데이트할 장소의 ID
+ * @param {number} newRating - 새로 추가된 별점 (1~5)
+ */
+async function updateLocationAverageRating(locationId, newRating) {
+  // 별점이 null이거나 숫자가 아니거나 범위를 벗어나면 무시
+  const ratingValue = Number(newRating);
+  if (newRating == null || !Number.isFinite(ratingValue) || ratingValue < 1 || ratingValue > 5) {
+    console.warn(`Invalid rating value (${newRating}) for location ${locationId}. Skipping update.`);
+    return;
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      // 1. 현재 장소 정보 가져오기 (잠금)
+      const location = await tx.location.findUnique({
+        where: { location_id: locationId },
+        select: { rating_avg: true, rating_count: true },
+      });
+      if (!location) return; // 장소가 없으면 중단
+
+      // 2. 새 평균 계산
+      const currentAvg = Number(location.rating_avg ?? 0);
+      const currentCount = location.rating_count ?? 0;
+      const newCount = currentCount + 1;
+      const newAvg = parseFloat(((currentAvg * currentCount + ratingValue) / newCount).toFixed(2));
+
+      // 3. DB 업데이트
+      await tx.location.update({
+        where: { location_id: locationId },
+        data: { rating_avg: newAvg, rating_count: newCount },
+      });
+    });
+    // console.log(`Updated rating for location ${locationId}: avg=${newAvg}, count=${newCount}`); // 성공 로그 (필요시 주석 해제)
+  } catch (error) {
+    console.error(`Failed to update rating for location ${locationId}:`, error);
+  }
 }
